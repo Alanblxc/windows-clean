@@ -9,4 +9,6 @@
 7. Save resource comparison, selection, logs and consolidated summary. Restore only journaled custom changes; upstream recovery and irreversible cleanup limits must be explicit.
 8. Verify syntax, isolated selection/driver/resource/cache/backup logic, actual upstream config validation and static safeguards. Never run cleanup during development; end-to-end servicing/UAC/restoration needs disposable Windows 11 validation.
 
+Agent UI protocol: Options exports base menu; Scan saves explicit choices and exports only requested candidates; Apply reuses the same run inventories and validates originals before mutation. Agent owns host multi-select windows, never console input. Cancel stops; empty candidate selection maps to NONE. Reject repeated Scan/Apply after application starts. Manual console mode remains supported.
+
 Sources: pinned upstream source and `vendor/UPSTREAM.md`; Microsoft DISM component store cleanup documentation at https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/clean-up-the-winsxs-folder

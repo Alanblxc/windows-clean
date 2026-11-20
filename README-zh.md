@@ -8,6 +8,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Disable-WindowsFeature
 
 使用 64 位 Windows PowerShell 5.1；默认入口未提权时弹标准 UAC。融合模式要求管理员与当前桌面登录用户是同一账户，组织管理/注册状态不明时停止。
 
+**通过 agent 执行时使用弹窗多选**，按 [PROMPT-zh.md](PROMPT-zh.md) 操作：`-AgentStage Options` 导出菜单，由 agent 弹出窗口；`-AgentStage Scan -RunDirectory ... -Selection "G1,G2,X1"` 保存基础选择并仅扫描所选类别；有候选时再弹窗口；`-AgentStage Apply -RunDirectory ... -Selection "S1,R2"` 复用本轮清单执行。候选传 `NONE` 表示不选额外候选。所有阶段不读取控制台输入，不隐式同意推荐项。Scan/Apply 必须使用 Options 的同一本轮目录，已经开始执行的目录禁止再次 Scan/Apply。直接手动运行仍保留控制台菜单。
+
 入口直接显示 G/U 功能菜单，不先扫描自启动、服务、任务或可选组件。输入逗号分隔编号，**替换**默认选择；直接回车采用显示为 `[*]` 的默认项；`NONE` 取消。需要额外候选时，在所选编号中加入 `X1`（自启动）或 `X2`（服务/任务/组件），才执行对应扫描并在精简前显示候选编号菜单；候选菜单回车或 NONE 均保留全部候选。Xbox 候选也需明确选择。同一任务不能同时选禁用和延迟，也不能在两类清单重复选择。驱动依赖检查仅在执行 G3 时进行，保留必要保护检查。
 
 - `G1`：自定义隐私、Copilot/Recall、小组件与 RmSvc/诊断服务；Recall 快照删除不可恢复。

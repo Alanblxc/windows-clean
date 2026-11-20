@@ -5,7 +5,10 @@ param(
     [string]$Mode = 'Unified',
     [string]$RunDirectory,
     [int[]]$StartupIds = @(),
-    [int[]]$ReviewIds = @()
+    [int[]]$ReviewIds = @(),
+    [ValidateSet('Console','Options','Scan','Apply')]
+    [string]$AgentStage = 'Console',
+    [string]$Selection = 'NONE'
 )
 
 # Windows PowerShell 5.1 only. Unified mode selects everything before applying changes.
@@ -20,7 +23,10 @@ if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.Major 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     if ($Mode -eq 'Unified') {
-        $process=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -Mode Unified') -Wait -PassThru
+        if ($Selection -notmatch '^(?i)[A-Z0-9,;\s]*$' -or $RunDirectory -match '"') { throw 'Invalid elevation arguments.' }
+        $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -Mode Unified -AgentStage '+$AgentStage+' -Selection "'+$Selection+'"'
+        if ($RunDirectory) { $arguments+=' -RunDirectory "'+$RunDirectory+'"' }
+        $process=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList $arguments -Wait -PassThru
         exit $process.ExitCode
     }
     # Escapes keep this file compatible with Windows PowerShell 5.1 without a UTF-8 BOM.
@@ -52,7 +58,7 @@ function Get-StartupAdvice($Name, $Command) {
 
 function Write-Json($Object, $Path) {
     $temporary = "$Path.new"
-    $Object | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $temporary -Encoding UTF8
+    ConvertTo-Json -InputObject $Object -Depth 30 | Set-Content -LiteralPath $temporary -Encoding UTF8
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 function Log($Status, $Item, $Detail) {
@@ -721,6 +727,7 @@ function Invoke-ComponentCleanup {
     Log 'VERIFIED' 'WinSxS' "DISM exit=$code; restart required=$($code -eq 3010). Component cleanup has no custom undo."
 }
 function Invoke-UnifiedCleanup {
+    if ($AgentStage -in @('Scan','Apply') -and (Test-Path (Join-Path $RunDirectory 'selection.json'))) { throw 'This run has already started applying. Inspect its logs; do not apply it twice.' }
     if ($management -ne 'Personal') { throw 'Managed/enrolled or unknown management state: no unified changes permitted.' }
     $vendor=Join-Path $PSScriptRoot 'vendor\Win11Debloat'
     if (-not (Test-Path (Join-Path $vendor 'Win11Debloat.ps1'))) { throw 'Download/extract the complete windows-clean repository, including vendor.' }
@@ -749,12 +756,27 @@ function Invoke-UnifiedCleanup {
     Write-Host 'Upstream telemetry/widgets excluded to preserve Defender and avoid forced process termination; G1 covers custom settings.'
     foreach ($option in $options) { Write-Host ("{0} {1}: {2}" -f $(if ($option.Default) {'[*]'} else {'[ ]'}),$option.Id,$option.Label) }
     Write-Json $options (Join-Path $RunDirectory 'available-options.json')
-    $selected=@(Resolve-CleanupSelection (Read-Host 'IDs') $options)
-    if ('X1' -in $selected) {
-        $rows=@(Get-StartupInventory)
-        Write-StartupReview $rows
+    if ($AgentStage -eq 'Options') {
+        Log 'AWAITING_SELECTION' 'Agent window' "Options exported: $RunDirectory\available-options.json. Show a multi-select window; Scan/Apply require this RunDirectory."
+        return
     }
-    if ('X2' -in $selected) { Write-ExtendedReview }
+    if ($AgentStage -eq 'Console') { $selected=@(Resolve-CleanupSelection (Read-Host 'IDs') $options) }
+    elseif ($AgentStage -eq 'Scan') {
+        if ([string]::IsNullOrWhiteSpace($Selection)) { throw 'Explicit agent selection required; use NONE to cancel.' }
+        $selected=@(Resolve-CleanupSelection $Selection $options)
+        Write-Json ([pscustomobject]@{Selected=$selected}) (Join-Path $RunDirectory 'agent-base-selection.json')
+    } else {
+        $selected=@((Get-Content (Join-Path $RunDirectory 'agent-base-selection.json') -Raw | ConvertFrom-Json).Selected)
+        $selected=@(Resolve-CleanupSelection $(if ($selected.Count) {$selected -join ','} else {'NONE'}) $options)
+    }
+    if ('X1' -in $selected) {
+        if ($AgentStage -eq 'Apply') { $rows=@(Get-Content (Join-Path $RunDirectory 'startup-review.json') -Raw | ConvertFrom-Json) }
+        else { $rows=@(Get-StartupInventory); Write-StartupReview $rows }
+    }
+    if ('X2' -in $selected) {
+        if ($AgentStage -eq 'Apply') { $script:review=@(Get-Content (Join-Path $RunDirectory 'extended-review.json') -Raw | ConvertFrom-Json) }
+        else { Write-ExtendedReview }
+    }
     if (@($script:report | Where-Object Status -eq 'FAILED').Count) { throw 'Inventory failed; no changes applied.' }
     $candidates=@()
     foreach ($row in $rows | Where-Object { $_.Supported -and $_.Enabled -eq 'Enabled' -and ($_.Recommend -or $_.Command -match '(?i)Microsoft\.GamingApp_8wekyb3d8bbwe!Microsoft\.Xbox\.App(?:\s|"|$)') }) {
@@ -763,7 +785,15 @@ function Invoke-UnifiedCleanup {
     foreach ($item in $script:review | Where-Object Supported) {
         $candidates+=[pscustomobject]@{Id="R$($item.Id)";Default=$false;Label="$($item.Kind): $($item.Name); $($item.Action); $($item.Impact)"}
     }
-    if ($candidates.Count) {
+    Write-Json @($candidates) (Join-Path $RunDirectory 'agent-candidates.json')
+    if ($AgentStage -eq 'Scan') {
+        Log 'AWAITING_SELECTION' 'Agent candidate window' "Candidates exported: $RunDirectory\agent-candidates.json. Apply reuses saved inventories; no cleanup performed."
+        return
+    }
+    if ($AgentStage -eq 'Apply') {
+        if ([string]::IsNullOrWhiteSpace($Selection)) { throw 'Explicit candidate selection required; use NONE to keep all.' }
+        $selected+=@(Resolve-CleanupSelection $Selection $candidates)
+    } elseif ($candidates.Count) {
         Write-Host 'Optional candidates: enter IDs; Enter or NONE keeps all. No changes applied yet.'
         foreach ($candidate in $candidates) { Write-Host "$($candidate.Id): $($candidate.Label)" }
         Write-Json @($options+$candidates) (Join-Path $RunDirectory 'available-options.json')
@@ -801,7 +831,8 @@ function Invoke-UnifiedCleanup {
     if ('G5' -in $selected) { Try-Operation 'WinSxS component cleanup (may take time)' { Invoke-ComponentCleanup } }
 }
 # Main: fresh independent run directories; follow-up modes require the exact original directory.
-$newRun=$Mode -in @('Unified','Disable','ScanStartup','Review')
+$newRun=($Mode -in @('Unified','Disable','ScanStartup','Review')) -and $AgentStage -notin @('Scan','Apply')
+if ($Mode -ne 'Unified' -and $AgentStage -ne 'Console') { throw 'AgentStage is supported only with Unified mode.' }
 if ($newRun) {
     if ($RunDirectory) { throw 'Disable/ScanStartup creates a new run. Do not supply RunDirectory.' }
     $RunDirectory=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ("WindowsCustomCleanup\"+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
