@@ -129,6 +129,12 @@ function Disable-ServiceBackedUp($Name) {
 }
 
 function Invoke-BaseSettings {
+    param([switch]$ServicesOnly)
+    foreach ($name in @('RmSvc','DiagTrack','dmwappushservice')) { Try-Operation $name { Disable-ServiceBackedUp $name } }
+    if ($ServicesOnly) {
+        Log 'NOTE' 'G1' 'W1 handles privacy, widgets and Copilot. G1 enforces disabled/stopped services only.'
+        return
+    }
     $telemetry = if ($os.EditionID -match '^(Enterprise|Education|IoTEnterprise)') { 0 } else { 1 }
     foreach ($setting in @(
         @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection','AllowTelemetry',$telemetry),
@@ -136,7 +142,6 @@ function Invoke-BaseSettings {
         @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI','AllowRecallEnablement',0),
         @('HKLM:\SOFTWARE\Policies\Microsoft\Dsh','AllowNewsAndInterests',0)
     )) { Try-Operation $setting[1] { Change-Reg $setting[0] $setting[1] $setting[2] } }
-    foreach ($name in @('RmSvc','DiagTrack','dmwappushservice')) { Try-Operation $name { Disable-ServiceBackedUp $name } }
     Log 'NOTE' 'Telemetry' 'Lowest supported policy requested; Home/Pro cannot guarantee zero telemetry. Policies may not be honored by every edition.'
     if (-not $script:target) { return }
     $hive = $script:target.Hive
@@ -755,7 +760,7 @@ function Invoke-UnifiedCleanup {
     $rows=@()
     $script:review=@()
     $options=@(
-        [pscustomobject]@{Id='G1';Default=$true;Label='Custom privacy/Copilot/Recall/widgets and RmSvc/diagnostic services; removal of Recall snapshots cannot be undone'},
+        [pscustomobject]@{Id='G1';默认=$true;Label='Custom privacy/Copilot/Recall/widgets and RmSvc/diagnostic services; removal of Recall snapshots cannot be undone'},
         [pscustomobject]@{Id='G2';Default=$true;Label='Disable game capture and Game Bar controller launch; keep gaming services'},
         [pscustomobject]@{Id='G3';Default=$true;Label='Back up and disable all five listed legacy drivers if installed'},
         [pscustomobject]@{Id='W1';Default=$true;Label='Full bundled Win11Debloat defaults, including default app removal; upstream backups separate'},
@@ -838,7 +843,7 @@ function Invoke-UnifiedCleanup {
     else { Try-Operation 'System restore point' { Invoke-IntegratedRestorePoint } }
     $n=0
     foreach ($setting in $upstream) { $n++; if ('W1' -notin $selected -and "U$n" -in $selected) { Try-Operation $setting.Name { Invoke-IntegratedDefault $setting.Name } } }
-    if ('G1' -in $selected) { Try-Operation 'Custom privacy settings' { Invoke-BaseSettings } }
+    if ('G1' -in $selected) { Try-Operation 'Custom privacy settings' { Invoke-BaseSettings -ServicesOnly:('W1' -in $selected) } }
     if ('G2' -in $selected) { Try-Operation 'Game settings' { Invoke-GameSettings } }
     if ('G3' -in $selected) { Try-Operation 'Selected drivers' { Invoke-SelectedDrivers } }
     foreach ($row in $rows | Where-Object { "S$($_.Id)" -in $selected }) { Try-Operation "Startup #$($row.Id)" { Disable-StartupRow $row } }
