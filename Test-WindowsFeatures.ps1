@@ -62,6 +62,7 @@ $caught=$false
 try { Change-Reg 'Fake:\Key' 'Test' 0 } catch { $caught=$true }
 Assert ($caught -and -not $script:writeCalled) 'Backup failure must prevent mutation'
 $source=$ast.Extent.Text
+Assert ($source.Contains('[switch]$OneClick = ($Mode -eq ''Unified'' -and $AgentStage -eq ''Console'' -and -not $ManualMenu)')) 'Default Unified execution must be one-click; explicit agent stages remain independent'
 Assert ($source -notmatch '(?i)Checkpoint-Computer|Enable-ComputerRestore') 'Custom script must leave restore points to upstream'
 Assert ($source -notmatch '(?i)Invoke-WebRequest|codeload\.github|RunDefaults') 'Unified mode uses vendored source and explicit config, no runtime downloads/default execution'
 foreach ($name in @('Resolve-CleanupSelection','Invoke-ComponentCleanup','Invoke-TempCleanup','Invoke-UnifiedCleanup')) {

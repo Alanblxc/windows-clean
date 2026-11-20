@@ -2,6 +2,8 @@
 
 ## One-click execution
 
+**Running without arguments now defaults to one-click cleanup**; `-OneClick` is optional. Confirm UAC when requested. Use `-ManualMenu` for the manual menu. Explicit agent stages and legacy modes do not inherit the one-click default.
+
 Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Disable-WindowsFeatures.ps1 -OneClick` to automatically select supported candidates except printing/Spooler/XPS/fax, without console or agent selection prompts. Existing exclusions and dependency checks remain. Task disable wins over delay and duplicate task actions are removed. Unknown dependencies remain untouched. This still runs inventories and DISM, which can take time. Bluetooth/Xbox startup, legacy media and optional app startup may change; temporary deletion and component cleanup have no custom undo. The Doubao prompt now uses this mode; the agent must have local execution capability.
 
 [中文说明](README-zh.md) · [AI 执行提示词](PROMPT-zh.md)

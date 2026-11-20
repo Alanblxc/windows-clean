@@ -9,7 +9,8 @@ param(
     [ValidateSet('Console','Options','Scan','Apply')]
     [string]$AgentStage = 'Console',
     [string]$Selection = 'NONE',
-    [switch]$OneClick
+    [switch]$ManualMenu,
+    [switch]$OneClick = ($Mode -eq 'Unified' -and $AgentStage -eq 'Console' -and -not $ManualMenu)
 )
 
 # Windows PowerShell 5.1 only. Unified mode selects everything before applying changes.
@@ -28,6 +29,7 @@ if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Pri
         $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -Mode Unified -AgentStage '+$AgentStage+' -Selection "'+$Selection+'"'
         if ($RunDirectory) { $arguments+=' -RunDirectory "'+$RunDirectory+'"' }
         if ($OneClick) { $arguments+=' -OneClick' }
+        elseif ($AgentStage -eq 'Console') { $arguments+=' -ManualMenu' }
         $process=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList $arguments -Wait -PassThru
         exit $process.ExitCode
     }

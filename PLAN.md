@@ -1,6 +1,6 @@
 # Unified cleanup scope
 
-OneClick: explicit -OneClick opts into G/U defaults and supported startup/extended candidates without prompts, excluding all printing/fax/XPS items. Deduplicate tasks across inventories, choose disable not delay, preserve unknown/read-only items and existing exclusions. Forward switch through the single UAC launch. Legacy console and agent stages remain available but are not used by the Doubao prompt.
+OneClick: default Unified/Console execution opts into G/U defaults and supported startup/extended candidates without prompts, excluding all printing/fax/XPS items. -ManualMenu restores the manual menu and is forwarded through elevation. Deduplicate tasks across inventories, choose disable not delay, preserve unknown/read-only items and existing exclusions. Forward switch through the single UAC launch. Agent stages and legacy modes do not inherit the default.
 
 1. Preserve the custom backup/restore machinery and legacy modes.
 2. Vendor the complete pinned Win11Debloat archive and MIT license; do not concatenate modular upstream files or download upstream at runtime.
