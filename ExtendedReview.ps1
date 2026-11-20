@@ -1,16 +1,41 @@
 # Loaded by Disable-WindowsFeatures.ps1, never execute directly.
+function Get-HealthComparison($Before,$After) {
+    $beforeMB=([double]$Before.TotalMemoryKB-[double]$Before.FreeMemoryKB)/1024
+    $afterMB=([double]$After.TotalMemoryKB-[double]$After.FreeMemoryKB)/1024
+    [pscustomobject]@{
+        BeforeTime=$Before.Time; AfterTime=$After.Time
+        BeforeProcessCount=$Before.ProcessCount; AfterProcessCount=$After.ProcessCount
+        ProcessCountChange=([int]$After.ProcessCount-[int]$Before.ProcessCount)
+        BeforeUsedMemoryMB=[math]::Round($beforeMB,2); AfterUsedMemoryMB=[math]::Round($afterMB,2)
+        UsedMemoryChangeMB=[math]::Round(($afterMB-$beforeMB),2)
+        Note='Change = after minus before; negative means reduced. System-wide physical memory used = total visible minus free, not sum of process working sets. Immediate observations include unrelated background activity; not proof of causal improvement or post-reboot results.'
+    }
+}
 function Write-HealthSnapshot($Label) {
     Try-Operation "Health $Label" {
         $osInfo=Get-CimInstance Win32_OperatingSystem
         $processes=@(Get-Process)
-        Write-Json @{
+        $snapshot=[pscustomobject]@{
             Time=(Get-Date).ToString('o'); LastBoot=$osInfo.LastBootUpTime
             ProcessCount=$processes.Count; FreeMemoryKB=$osInfo.FreePhysicalMemory; TotalMemoryKB=$osInfo.TotalVisibleMemorySize
             CpuLoadPercent=(Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average
             Processes=@($processes | Select-Object Id,ProcessName,SessionId,CPU,WorkingSet64)
             Sessions=(& "$env:SystemRoot\System32\quser.exe" 2>&1 | Out-String)
             Note='Process CPU is cumulative time, not instantaneous load. No sessions terminated. Compare equivalent workloads after manual restart and 3-5 minutes idle; no inferred boot-time improvement.'
-        } (Join-Path $RunDirectory "health-$Label-$(Get-Date -Format yyyyMMdd-HHmmss).json")
+        }
+        Write-Json $snapshot (Join-Path $RunDirectory "health-$Label-$(Get-Date -Format yyyyMMdd-HHmmss).json")
+        if ($Label -eq 'before') { $script:healthBefore=$snapshot }
+        elseif ($Label -eq 'after' -and $script:healthBefore) {
+            $comparison=Get-HealthComparison $script:healthBefore $snapshot
+            Write-Json $comparison (Join-Path $RunDirectory ("health-comparison-"+$Mode+'-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fff')+'.json'))
+            Write-Host ''
+            Write-Host 'Resource comparison (before -> after; change = after - before)'
+            Write-Host ("Processes: {0} -> {1}; change {2:+0;-0;0}" -f $comparison.BeforeProcessCount,$comparison.AfterProcessCount,$comparison.ProcessCountChange)
+            Write-Host ("Used physical memory: {0:N2} MB -> {1:N2} MB; change {2:+0.00;-0.00;0.00} MB" -f $comparison.BeforeUsedMemoryMB,$comparison.AfterUsedMemoryMB,$comparison.UsedMemoryChangeMB)
+            Write-Host 'Immediate system-wide observations only; background activity and pending restart affect results.'
+        } elseif ($Label -eq 'after') {
+            Log 'SKIP' 'Resource comparison' 'Before snapshot unavailable; no comparison invented.'
+        }
     }
 }
 function Add-Review($Kind,$Name,$Original,$Action,$Impact,$Supported=$true) {

@@ -48,7 +48,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<完整解压路径>\Wi
 ```
 
 - 将脚本保存到本轮下载目录，用 `Get-FileHash -Algorithm SHA256` 核对。哈希不符则停止自定义脚本步骤并报告；不自行更新预期哈希，也不执行不匹配的代码。
-- 还必须下载 https://raw.githubusercontent.com/Alanblxc/windows-clean/main/ExtendedReview.ps1 到主脚本同目录，SHA256 必须为 `B6892C4002CB6BCED02E65081C64F9714A688DA055B4224CEFBEF3CBF5A2275B`。两个文件全部核对成功后才能执行；后续选择模式也要重新校验两个文件。
+- 还必须下载 https://raw.githubusercontent.com/Alanblxc/windows-clean/main/ExtendedReview.ps1 到主脚本同目录，SHA256 必须为 `411BEDDF36A8E2D7B7ADCBE34D47AAEA636C974615945827CBD65761E87409D4`。两个文件全部核对成功后才能执行；后续选择模式也要重新校验两个文件。
 - 读取说明并审核实际脚本，确认只在约定范围内修改。不要使用 `irm | iex` 等下载即执行方式。
 - 如果脚本要求、跳过条件或实际能力和本提示词冲突，采用更保守的限制并记录，不临时猜测注册表、绕过检查或补装第三方组策略工具。
 - 仅执行一次默认模式：
@@ -100,6 +100,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<本轮下载目录>\Di
 先备份，后修改并回读；计划任务仅禁用不删除。若拟移除启动入口，必须在候选清单中预先说明。不得删除程序本体、卸载应用或结束它们的进程。无法可靠禁用/恢复的项跳过，不绕过脚本限制。
 
 ## 5. 验证、报告和恢复
+
+- 报告自定义脚本在控制台输出的前后进程数量、系统已用物理内存（MB）及变化量，并读取本轮 `health-comparison-模式-时间.json`。变化量为之后减之前，负值表示减少。此基线在自定义脚本启动时采集，不是 Win11Debloat 执行前；即时波动不代表因果收益，重启后效果需另行同条件验证。
 
 - 读取实际 `report.json`、操作日志、`original-values.json` 及驱动/保护服务前后记录。区分完成、原已符合、跳过、失败、待选择。
 - 上游报告来源、源码版本、ZIP SHA256、退出码和日志中的具体错误；自定义报告仓库、脚本 SHA256、本轮真实绝对路径。

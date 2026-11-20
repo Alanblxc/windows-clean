@@ -22,7 +22,7 @@ SHA256：
 主脚本现在需要同目录的 [ExtendedReview.ps1](ExtendedReview.ps1)，扩展文件 SHA256：
 
 ```text
-B6892C4002CB6BCED02E65081C64F9714A688DA055B4224CEFBEF3CBF5A2275B
+411BEDDF36A8E2D7B7ADCBE34D47AAEA636C974615945827CBD65761E87409D4
 ```
 
 新增资源/会话快照、服务/可选组件/所有第三方任务审核及按编号应用。还原点由提示词中的 Win11Debloat 按上游默认行为处理，自定义脚本不重复创建；逐项备份仍保留。默认不修改 SysMain、无线显示器、第三方应用后台权限；WSearch 继续保留。详见中文说明。
