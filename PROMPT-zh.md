@@ -1,11 +1,9 @@
-# Windows 11 精简提示词
+# 发给豆包的一键精简提示词
 
-下载并完整解压 https://codeload.github.com/Alanblxc/windows-clean/zip/refs/heads/main 到持久目录（已有完整副本直接复用），全程使用 64 位 Windows PowerShell 5.1。不额外审查源码、核对哈希、比对约定或先做全盘扫描，不单独运行 Win11Debloat。
+请直接在本机执行：下载并完整解压 https://codeload.github.com/Alanblxc/windows-clean/zip/refs/heads/main 到持久目录（已有最新版完整副本则复用），使用 64 位 Windows PowerShell 5.1 运行：
 
-**由 agent 弹出多选窗口，不让我在控制台输入编号。** 按以下协议执行：
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<解压目录>\Disable-WindowsFeatures.ps1" -OneClick
+```
 
-1. 运行 `Disable-WindowsFeatures.ps1 -AgentStage Options`，读取输出的本轮目录中的 `available-options.json`。用 agent 的交互选择窗口展示中文名称、作用和影响（OpenChamber 用 `openchamber_render` 的 `ui` 多选 `Choice` 配合 `awaitAnswer`）。Id 为传参值，Default 只用于标注推荐，必须等我提交；取消就停止，不能用默认项代替同意。
-2. 把窗口所选 Id 用逗号连接，运行 `Disable-WindowsFeatures.ps1 -AgentStage Scan -RunDirectory "<本轮目录>" -Selection "<所选编号或NONE>"`。只有 X1/X2 会扫描额外候选。读取 `agent-candidates.json`，有候选则再弹多选窗口（默认不选），无候选直接进入执行；取消整个操作就停止。
-3. 运行 `Disable-WindowsFeatures.ps1 -AgentStage Apply -RunDirectory "<同一本轮目录>" -Selection "<候选编号或NONE>"`。基础选择已保存，无需再次传入；NONE 表示保留全部额外候选，仍执行已提交的基础选择。复用本轮扫描，不重新整套扫描。不重复 Apply；超时先查原进程及日志。
-
-提权、备份、实时输出、WinSxS 清理、资源对比与日志由脚本处理。执行结束后简报实际结果和日志/备份路径。
+只让我确认一次标准 UAC，不弹选择窗口、不询问编号、不额外审查源码、核对哈希或比对约定，也不单独运行 Win11Debloat。脚本自动扫描并执行支持的可选项，保留打印服务、XPS、传真及原有排除项；未知依赖继续跳过。备份、实时进度、临时文件及 WinSxS 清理和资源对比均由脚本完成，不重复操作，不自动重启或注销。等待结束并简报实际结果与日志/恢复路径；超时先检查原进程，不重复启动。如果你没有本机命令执行权限，请明确说明，不要声称已执行。

@@ -88,7 +88,19 @@ Assert ($unified.Extent.Text.Contains('if (''X1'' -in $selected)')) 'Startup sca
 Assert ($unified.Extent.Text.Contains('if (''X2'' -in $selected)')) 'Extended DISM/task/service scan must be opt-in'
 Assert ($unified.Extent.Text -match "AgentStage -eq 'Options'" -and $unified.Extent.Text -match 'agent-candidates.json') 'Agent flow exports menu and candidate data'
 Assert ($unified.Extent.Text.Contains('if ($AgentStage -eq ''Apply'') { $rows=@(Get-Content')) 'Agent apply reuses startup inventory'
-Assert ($unified.Extent.Text.Contains('if ($AgentStage -eq ''Console'') { $selected=@(Resolve-CleanupSelection (Read-Host')) 'Agent stages never prompt for console IDs'
+Assert ($unified.Extent.Text.Contains('($AgentStage -eq ''Console'') { $selected=@(Resolve-CleanupSelection (Read-Host')) 'Agent stages never prompt for console IDs'
+$oneClickDefinition=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq 'Get-OneClickCandidateIds'
+. ([scriptblock]::Create($oneClickDefinition.Extent.Text))
+$sampleRows=@([pscustomobject]@{Id=1;Supported=$true;Enabled='Enabled';Recommend=$true;Kind='Task';Name='Steam';Command='steam.exe';Original=@{TaskPath='\';TaskName='Steam'}})
+$sampleReview=@(
+    [pscustomobject]@{Id=1;Supported=$true;Kind='Service';Name='Spooler'},
+    [pscustomobject]@{Id=2;Supported=$true;Kind='Feature';Name='Printing-XPSServices-Features'},
+    [pscustomobject]@{Id=3;Supported=$true;Kind='Service';Name='Fax'},
+    [pscustomobject]@{Id=4;Supported=$true;Kind='Service';Name='bthserv'},
+    [pscustomobject]@{Id=5;Supported=$true;Kind='Task';Name='\Steam'},
+    [pscustomobject]@{Id=6;Supported=$true;Kind='Delay';Name='\Steam'},
+    [pscustomobject]@{Id=7;Supported=$false;Kind='ThirdPartyService';Name='Unknown'})
+Assert ((@(Get-OneClickCandidateIds $sampleRows $sampleReview) -join ',') -eq 'S1,R4') 'OneClick preserves printing/fax/XPS/unknown and avoids duplicate/contradictory task actions'
 Assert ($unified.Extent.Text -match '-SkipExplorerRestart') 'Upstream cannot restart Explorer'
 Assert ($unified.Extent.Text -match "'CreateRestorePoint','DisableTelemetry','DisableWidgets'") 'Conflicting upstream effects are excluded'
 $tempFunction=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq 'Invoke-TempCleanup'

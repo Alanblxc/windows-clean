@@ -1,5 +1,7 @@
 # Unified cleanup scope
 
+OneClick: explicit -OneClick opts into G/U defaults and supported startup/extended candidates without prompts, excluding all printing/fax/XPS items. Deduplicate tasks across inventories, choose disable not delay, preserve unknown/read-only items and existing exclusions. Forward switch through the single UAC launch. Legacy console and agent stages remain available but are not used by the Doubao prompt.
+
 1. Preserve the custom backup/restore machinery and legacy modes.
 2. Vendor the complete pinned Win11Debloat archive and MIT license; do not concatenate modular upstream files or download upstream at runtime.
 3. Default Unified entry: UAC, environment/target validation, health baseline, immediate G/U menu before expensive inventories. X1 opts into startup inventory; X2 opts into service/component/task inventory. Only requested inventories run, followed by a candidate menu before cleanup. Explicit IDs replace defaults, NONE cancels, invalid/conflicting choices abort. Candidate defaults are empty, including Xbox. Driver checks remain within selected G3 execution.

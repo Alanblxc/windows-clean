@@ -8,7 +8,8 @@ param(
     [int[]]$ReviewIds = @(),
     [ValidateSet('Console','Options','Scan','Apply')]
     [string]$AgentStage = 'Console',
-    [string]$Selection = 'NONE'
+    [string]$Selection = 'NONE',
+    [switch]$OneClick
 )
 
 # Windows PowerShell 5.1 only. Unified mode selects everything before applying changes.
@@ -26,6 +27,7 @@ if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Pri
         if ($Selection -notmatch '^(?i)[A-Z0-9,;\s]*$' -or $RunDirectory -match '"') { throw 'Invalid elevation arguments.' }
         $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -Mode Unified -AgentStage '+$AgentStage+' -Selection "'+$Selection+'"'
         if ($RunDirectory) { $arguments+=' -RunDirectory "'+$RunDirectory+'"' }
+        if ($OneClick) { $arguments+=' -OneClick' }
         $process=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList $arguments -Wait -PassThru
         exit $process.ExitCode
     }
@@ -727,6 +729,7 @@ function Invoke-ComponentCleanup {
     Log 'VERIFIED' 'WinSxS' "DISM exit=$code; restart required=$($code -eq 3010). Component cleanup has no custom undo."
 }
 function Invoke-UnifiedCleanup {
+    if ($OneClick -and $AgentStage -ne 'Console') { throw 'OneClick cannot be combined with agent stages.' }
     if ($AgentStage -in @('Scan','Apply') -and (Test-Path (Join-Path $RunDirectory 'selection.json'))) { throw 'This run has already started applying. Inspect its logs; do not apply it twice.' }
     if ($management -ne 'Personal') { throw 'Managed/enrolled or unknown management state: no unified changes permitted.' }
     $vendor=Join-Path $PSScriptRoot 'vendor\Win11Debloat'
@@ -760,7 +763,11 @@ function Invoke-UnifiedCleanup {
         Log 'AWAITING_SELECTION' 'Agent window' "Options exported: $RunDirectory\available-options.json. Show a multi-select window; Scan/Apply require this RunDirectory."
         return
     }
-    if ($AgentStage -eq 'Console') { $selected=@(Resolve-CleanupSelection (Read-Host 'IDs') $options) }
+    if ($OneClick) {
+        $selected=@($options | Where-Object Default | ForEach-Object Id)+@('X1','X2')
+        Log 'NOTE' 'One-click selection' 'Automatic supported candidates except printing/fax/XPS. Unknown dependencies retained. No selection prompts.'
+    }
+    elseif ($AgentStage -eq 'Console') { $selected=@(Resolve-CleanupSelection (Read-Host 'IDs') $options) }
     elseif ($AgentStage -eq 'Scan') {
         if ([string]::IsNullOrWhiteSpace($Selection)) { throw 'Explicit agent selection required; use NONE to cancel.' }
         $selected=@(Resolve-CleanupSelection $Selection $options)
@@ -790,7 +797,9 @@ function Invoke-UnifiedCleanup {
         Log 'AWAITING_SELECTION' 'Agent candidate window' "Candidates exported: $RunDirectory\agent-candidates.json. Apply reuses saved inventories; no cleanup performed."
         return
     }
-    if ($AgentStage -eq 'Apply') {
+    if ($OneClick) {
+        $selected+=@(Get-OneClickCandidateIds $rows $script:review)
+    } elseif ($AgentStage -eq 'Apply') {
         if ([string]::IsNullOrWhiteSpace($Selection)) { throw 'Explicit candidate selection required; use NONE to keep all.' }
         $selected+=@(Resolve-CleanupSelection $Selection $candidates)
     } elseif ($candidates.Count) {
@@ -829,6 +838,18 @@ function Invoke-UnifiedCleanup {
     foreach ($item in $selectedReview) { Try-Operation "Review #$($item.Id)" { Apply-ExtendedItem $item } }
     if ('G4' -in $selected) { Try-Operation 'Temporary file cleanup' { Invoke-TempCleanup } }
     if ('G5' -in $selected) { Try-Operation 'WinSxS component cleanup (may take time)' { Invoke-ComponentCleanup } }
+}
+function Get-OneClickCandidateIds($Rows,$Review) {
+    $startup=@($Rows | Where-Object { $_.Supported -and $_.Enabled -eq 'Enabled' -and ($_.Recommend -or $_.Command -match '(?i)Microsoft\.GamingApp_8wekyb3d8bbwe!Microsoft\.Xbox\.App(?:\s|"|$)') })
+    $startup=@($startup | Where-Object { "$($_.Name) $($_.Command)" -notmatch '(?i)Spooler|Printing|Print|XPS|Fax' })
+    foreach ($row in $startup) { "S$($row.Id)" }
+    $startupTasks=@($startup | Where-Object Kind -eq 'Task' | ForEach-Object { $_.Original.TaskPath+$_.Original.TaskName })
+    foreach ($item in $Review) {
+        if (-not $item.Supported -or $item.Kind -eq 'Delay') { continue }
+        if ($item.Name -match '(?i)Spooler|Printing|Print|XPS|Fax') { continue }
+        if ($item.Kind -eq 'Task' -and $item.Name -in $startupTasks) { continue }
+        "R$($item.Id)"
+    }
 }
 # Main: fresh independent run directories; follow-up modes require the exact original directory.
 $newRun=($Mode -in @('Unified','Disable','ScanStartup','Review')) -and $AgentStage -notin @('Scan','Apply')

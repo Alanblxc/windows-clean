@@ -1,5 +1,9 @@
 # Windows clean
 
+## One-click execution
+
+Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Disable-WindowsFeatures.ps1 -OneClick` to automatically select supported candidates except printing/Spooler/XPS/fax, without console or agent selection prompts. Existing exclusions and dependency checks remain. Task disable wins over delay and duplicate task actions are removed. Unknown dependencies remain untouched. This still runs inventories and DISM, which can take time. Bluetooth/Xbox startup, legacy media and optional app startup may change; temporary deletion and component cleanup have no custom undo. The Doubao prompt now uses this mode; the agent must have local execution capability.
+
 [中文说明](README-zh.md) · [AI 执行提示词](PROMPT-zh.md)
 
 A Windows 11 cleanup entry that combines custom cleanup with a complete, pinned copy of [Win11Debloat](https://github.com/Raphire/Win11Debloat). Scan, choose options before changes, then execute the selection in one run. Download/extract the **whole repository**, including `vendor`; the entry is no longer a standalone download.
