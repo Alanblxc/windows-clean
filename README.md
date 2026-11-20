@@ -10,6 +10,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\WindowsClean.ps1
 
 Default execution is one-click, elevating through standard UAC when necessary. Printing/Spooler/XPS/fax and existing protected features are retained. Unknown dependencies are skipped. No automatic restart/logoff or forced application termination.
 
+Domain membership, work/school enrollment and device-management detection/gates have been removed from cleanup and recovery. Elevation, target-user, backup, driver-dependency and restore-conflict checks remain. Organization policies may reapply settings.
+
 ## Direct implementation
 
 Default registry operations adapted from Win11Debloat execute directly through the custom journal. No embedded archive, upstream extraction/config or upstream child executor remains. MIT attribution is included in the release; vendor is a reference snapshot only.

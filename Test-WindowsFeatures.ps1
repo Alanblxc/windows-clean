@@ -62,6 +62,7 @@ $caught=$false
 try { Change-Reg 'Fake:\Key' 'Test' 0 } catch { $caught=$true }
 Assert ($caught -and -not $script:writeCalled) 'Backup failure must prevent mutation'
 $source=$ast.Extent.Text
+Assert ($source -notmatch 'Get-ManagementState|ManagedOrEnrolled|PartOfDomain|CloudDomainJoin|Microsoft\\Enrollments|\$management') 'Device enrollment/domain detection and all management gates removed'
 Assert ($source.Contains('[switch]$OneClick = ($Mode -eq ''Unified'' -and $AgentStage -eq ''Console'' -and -not $ManualMenu)')) 'Default Unified execution must be one-click; explicit agent stages remain independent'
 Assert ($source -match 'function Invoke-IntegratedRestorePoint') 'Restore point logic is now local'
 Assert ($source -notmatch '(?i)Invoke-WebRequest|codeload\.github|RunDefaults') 'Unified mode uses vendored source and explicit config, no runtime downloads/default execution'

@@ -8,6 +8,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\WindowsClean.ps1
 
 默认一键执行，未提权时弹标准 UAC。保留打印服务、XPS、传真，以及 SysMain、WSearch、无线显示器、第三方应用后台权限、Gaming Services/GameInput、Store、Defender、防火墙和 Windows Update。未知依赖跳过；任务禁用优先于延迟，同一任务只处理一次。不自动重启、注销或强制结束应用。
 
+不再检测域加入、工作/学校注册或设备托管状态，也不因这些状态阻止精简和恢复。管理员权限、目标用户、备份、驱动依赖和恢复冲突检查仍保留。组织策略可能重新覆盖设置。
+
 ## 默认项目直接执行
 
 Win11Debloat 默认注册表操作已直接合并到主脚本，包括 Windows 推荐、Edge 广告、锁屏提示、Bing/Cortana 搜索策略、Copilot/Recall/ClickToDo、AI 服务启动、聊天按钮、文件扩展名及现代待机网络策略。适用版本受限的项目跳过。

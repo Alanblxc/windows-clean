@@ -141,22 +141,6 @@ function Get-TargetUser {
     $profile = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$($owners[0])"
     [pscustomobject]@{ Sid=$owners[0]; Hive="Registry::HKEY_USERS\$($owners[0])"; Profile=$profile.ProfileImagePath; Session=$session }
 }
-function Get-ManagementState {
-    # Conservative: registered work/school enrollment also causes a skip.
-    try {
-        $domain = (Get-CimInstance Win32_ComputerSystem).PartOfDomain
-        $enrolled = $false
-        if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Enrollments') {
-            $enrolled = @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Enrollments' -ErrorAction Stop | Where-Object {
-                $p = Get-ItemProperty $_.PSPath
-                $p.ProviderID -or $p.EnrollmentType
-            }).Count -gt 0
-        }
-        $join = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\CloudDomainJoin\JoinInfo'
-        if ($domain -or $enrolled -or $join) { return 'ManagedOrEnrolled' }
-        return 'Personal'
-    } catch { return 'Unknown' }
-}
 function Disable-ServiceBackedUp($Name) {
     $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
     if (-not $service) { Log 'SKIP' $Name 'Not installed.'; return }
@@ -822,7 +806,6 @@ function Invoke-IntegratedDefault($Name) {
 function Invoke-UnifiedCleanup {
     if ($OneClick -and $AgentStage -ne 'Console') { throw 'OneClick cannot be combined with agent stages.' }
     if ($AgentStage -in @('Scan','Apply') -and (Test-Path (Join-Path $RunDirectory 'selection.json'))) { throw 'This run has already started applying. Inspect its logs; do not apply it twice.' }
-    if ($management -ne 'Personal') { throw 'Managed/enrolled or unknown management state: no unified changes permitted.' }
     $rows=@()
     $script:review=@()
     $options=@(
@@ -962,31 +945,23 @@ try {
     Write-Json $protectedBefore (Join-Path $RunDirectory "$Mode-protected-before.json")
     $script:target=$null
     try { $script:target=Get-TargetUser } catch { Log 'SKIP' 'User settings' $_.Exception.Message }
-    $management=Get-ManagementState
     Write-HealthSnapshot 'before'
-    Log 'NOTE' 'Environment' "Build=$($os.CurrentBuildNumber); Edition=$($os.EditionID); Management=$management; Directory=$RunDirectory"
+    Log 'NOTE' 'Environment' "Build=$($os.CurrentBuildNumber); Edition=$($os.EditionID); Directory=$RunDirectory"
     if ($newRun) { $script:journal.Target=$script:target; Save-Journal }
     elseif ($script:journal.Target -and (-not $script:target -or $script:target.Sid -ne $script:journal.Target.Sid)) { throw 'Original target user is no longer uniquely active in this session; stopped.' }
 
-    if ($Mode -in @('Restore','RestoreDrivers','DisableStartup','ApplyReview') -and $management -ne 'Personal') {
-        throw 'Managed/enrolled or unknown management state: no writes permitted.'
-    }
     switch ($Mode) {
         'Unified' { Invoke-UnifiedCleanup }
         'Disable' {
-            if ($management -eq 'Personal') {
-                Invoke-BaseSettings
-                Try-Operation 'Game settings' { Invoke-GameSettings }
-                Invoke-SelectedDrivers
-            } else { Log 'SKIP' 'System changes' 'Organization management detected or uncertain; no policy/service/driver changes.' }
+            Invoke-BaseSettings
+            Try-Operation 'Game settings' { Invoke-GameSettings }
+            Invoke-SelectedDrivers
             $rows=Get-StartupInventory
-            if ($management -eq 'Personal') {
-                foreach ($row in $rows) {
+            foreach ($row in $rows) {
                     # Xbox name alone is insufficient. Only exact Xbox package launch identity.
                     if ($row.Enabled -eq 'Enabled' -and $row.Supported -and $row.Command -match '(?i)Microsoft\.GamingApp_8wekyb3d8bbwe!Microsoft\.Xbox\.App(?:\s|"|$)') {
                         Try-Operation 'Xbox startup' { Disable-StartupRow $row; $row.XboxHandled=$true; $row.Enabled='Disabled' }
                     }
-                }
             }
             Write-StartupReview $rows
             Write-ExtendedReview
