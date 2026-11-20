@@ -4,10 +4,7 @@ $path = Join-Path $PSScriptRoot 'Disable-WindowsFeatures.ps1'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors.Message -join "`n") }
-$extraTokens=$null; $extraErrors=$null
-$extraAst=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'ExtendedReview.ps1'),[ref]$extraTokens,[ref]$extraErrors)
-if ($extraErrors.Count) { throw ($extraErrors.Message -join "`n") }
-$comparisonFunction=$extraAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },$true) | Where-Object Name -eq 'Get-HealthComparison'
+$comparisonFunction=$ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },$true) | Where-Object Name -eq 'Get-HealthComparison'
 . ([scriptblock]::Create($comparisonFunction.Extent.Text))
 $before=[pscustomobject]@{Time='before'; ProcessCount=140; TotalMemoryKB=16777216; FreeMemoryKB=8388608}
 $after=[pscustomobject]@{Time='after'; ProcessCount=120; TotalMemoryKB=16777216; FreeMemoryKB=9437184}
@@ -17,8 +14,24 @@ $reverse=Get-HealthComparison $after $before
 if ($reverse.ProcessCountChange -ne 20 -or $reverse.UsedMemoryChangeMB -ne 1024) { throw 'Resource increase comparison failed' }
 $same=Get-HealthComparison $before $before
 if ($same.ProcessCountChange -ne 0 -or $same.UsedMemoryChangeMB -ne 0) { throw 'Unchanged comparison failed' }
-if ($extraAst.Extent.Text -match '(?i)WirelessDisplay|AppPrivacy|SysMain.*Set-Service') { throw 'Excluded changes found in extension.' }
+if ($ast.Extent.Text -match '(?i)WirelessDisplay|AppPrivacy|SysMain.*Set-Service') { throw 'Excluded changes found.' }
 function Assert($Condition, $Message) { if (-not $Condition) { throw $Message } }
+foreach ($name in @('Get-InventoryTasks','Get-InventoryTaskXml','Read-DriverReferences')) {
+    $definition=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq $name
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+$script:inventoryTasks=$null; $script:taskXmlCache=@{}; $script:taskReads=0; $script:xmlReads=0
+function Get-ScheduledTask { $script:taskReads++; [pscustomobject]@{TaskPath='\';TaskName='Test'} }
+function Export-ScheduledTask { $script:xmlReads++; '<Task />' }
+$tasks=@(Get-InventoryTasks); $again=@(Get-InventoryTasks)
+$null=Get-InventoryTaskXml $tasks[0]; $null=Get-InventoryTaskXml $again[0]
+Assert ($script:taskReads -eq 1 -and $script:xmlReads -eq 1) 'Inventory should query tasks/XML once'
+$key=[pscustomobject]@{Name='FakeRegistryKey'}
+$key | Add-Member ScriptMethod GetValue { param($field) if ($field -eq 'UpperFilters') { @('HidIr','usbcir') } }
+$references=New-Object 'System.Collections.Generic.List[object]'
+Read-DriverReferences $key $references
+Assert ($references.Count -eq 2 -and $references[0].Reference -eq 'HidIr') 'Streaming dependency read must preserve multiple filter values'
+Assert ($ast.Extent.Text -notmatch 'ExtendedReview\.ps1') 'Single-file script must not load external extension'
 foreach ($name in @('Get-DriverDecision', 'Get-StartupAdvice')) {
     $definition = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
         Where-Object Name -eq $name | Select-Object -First 1
@@ -54,4 +67,4 @@ Assert ($source -notmatch '(?i)Invoke-WebRequest|codeload\.github|RunDefaults|St
 Assert ($source -notmatch '(?i)Restart-Computer|Stop-Computer|logoff\.exe|shutdown\.exe') 'No automatic restart/logoff'
 Assert ($source -notmatch '(?i)Set-Service\s+[''"]?(WSearch|GamingServices|GamingServicesNet|GameInput)') 'Protected services are not modified'
 Assert ($source -notmatch '(?i)Stop-Process|taskkill') 'No forced process termination'
-Write-Output 'PASS: Windows PowerShell syntax, 10 decision tests, 3 resource comparison tests, backup-failure test and 5 static safety checks. No cleanup code executed.'
+Write-Output 'PASS: syntax; decision/resource tests; task/XML cache and streaming dependency tests; backup-failure and static safety checks. No cleanup code executed.'

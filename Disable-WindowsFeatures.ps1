@@ -10,6 +10,10 @@ param(
 
 # Windows PowerShell 5.1 only. No downloads, UAC, restart or Win11Debloat execution.
 $ErrorActionPreference = 'Stop'
+$script:runClock=[Diagnostics.Stopwatch]::StartNew()
+$script:commandEvidenceCache=@{}
+$script:taskXmlCache=@{}
+Write-Host '[START] Windows cleanup: checking execution environment...' -ForegroundColor Cyan
 if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.Major -ne 5 -or -not [Environment]::Is64BitProcess) {
     throw 'Run in 64-bit Windows PowerShell 5.1 (powershell.exe), not pwsh.exe.'
 }
@@ -55,7 +59,10 @@ function Log($Status, $Item, $Detail) {
 }
 function Save-Journal { Write-Json $script:journal (Join-Path $RunDirectory 'original-values.json') }
 function Try-Operation($Name, [scriptblock]$Action) {
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    Write-Host ("[{0:N1}s] START {1}" -f $script:runClock.Elapsed.TotalSeconds,$Name) -ForegroundColor Cyan
     try { & $Action } catch { Log 'FAILED' $Name $_.Exception.Message }
+    finally { Write-Host ("[{0:N1}s] END {1} ({2:N1}s)" -f $script:runClock.Elapsed.TotalSeconds,$Name,$clock.Elapsed.TotalSeconds) }
 }
 function Get-RegOriginal($Path, $Name) {
     $key = if (Test-Path -LiteralPath $Path) { Get-Item -LiteralPath $Path } else { $null }
@@ -193,27 +200,31 @@ function Invoke-GameSettings {
 }
 
 function Invoke-SelectedDrivers {
-    $complete=$true; $devices=@(); $filters=@(); $systemDrivers=@()
+    $complete=$true; $devices=@(); $filters=New-Object 'System.Collections.Generic.List[object]'; $systemDrivers=@()
     try {
+        Write-Host '[DRIVERS] Reading installed devices and running drivers...'
         # Win32_PnPEntity alone can miss phantom devices. Read all installed PnP devices too.
         $devices = @(Get-PnpDevice -ErrorAction Stop)
         $systemDrivers = @(Get-CimInstance Win32_SystemDriver -ErrorAction Stop)
         foreach ($root in @('HKLM:\SYSTEM\CurrentControlSet\Enum','HKLM:\SYSTEM\CurrentControlSet\Control\Class')) {
-            $keys = @(Get-Item $root) + @(Get-ChildItem $root -Recurse -ErrorAction Stop)
-            foreach ($key in $keys) {
-                $p = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
-                foreach ($field in @('Service','UpperFilters','LowerFilters')) {
-                    foreach ($value in @($p.$field)) { if ($value) { $filters += [pscustomobject]@{ Source=$key.Name; Reference="$value" } } }
-                }
+            # Stream keys and read only dependency values; do not materialize every registry property.
+            $count=0
+            Get-Item $root -ErrorAction Stop | ForEach-Object { Read-DriverReferences $_ $filters }
+            Get-ChildItem $root -Recurse -ErrorAction Stop | ForEach-Object {
+                Read-DriverReferences $_ $filters
+                $count++
+                if ($count % 250 -eq 0) { Write-Host "[DRIVERS] $root : $count keys checked..." }
             }
         }
+        Write-Host '[DRIVERS] Reading service dependencies...'
         # Driver service dependencies may require another driver without a direct PnP reference.
         foreach ($key in Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services' -ErrorAction Stop) {
-            $p = Get-ItemProperty $key.PSPath -ErrorAction Stop
-            foreach ($dependency in @($p.DependOnService)) { if ($dependency) { $filters += [pscustomobject]@{ Source=$key.Name; Reference="$dependency" } } }
+            foreach ($dependency in @($key.GetValue('DependOnService'))) {
+                if ($dependency) { $filters.Add([pscustomobject]@{ Source=$key.Name; Reference="$dependency" }) }
+            }
         }
     } catch { $complete=$false; Log 'NOTE' 'Driver inventory' "Incomplete: $($_.Exception.Message). Non-beep targets will be preserved." }
-    Write-Json @{ Complete=$complete; Devices=@($devices | Select-Object InstanceId,Class,FriendlyName,Status); References=$filters } (Join-Path $RunDirectory 'device-inventory.json')
+    Write-Json @{ Complete=$complete; Devices=@($devices | Select-Object InstanceId,Class,FriendlyName,Status); References=@($filters.ToArray()) } (Join-Path $RunDirectory 'device-inventory.json')
     foreach ($name in @('1394ohci','beep','HidIr','circlass','usbcir')) {
         Try-Operation "Driver $name" {
             $path="HKLM:\SYSTEM\CurrentControlSet\Services\$name"
@@ -249,6 +260,7 @@ function Invoke-SelectedDrivers {
 }
 
 function Get-CommandEvidence($Command) {
+    if ($script:commandEvidenceCache.ContainsKey($Command)) { return $script:commandEvidenceCache[$Command] }
     $file=$null
     if ($Command -match '^\s*"([^"]+)"') { $file=$matches[1] }
     elseif ($Command -match '^\s*(.+?\.(?:exe|com|bat|cmd|ps1|lnk))(?=\s|$)') { $file=$matches[1] }
@@ -263,7 +275,31 @@ function Get-CommandEvidence($Command) {
             } catch { $signature='Read failed' }
         }
     }
-    [pscustomobject]@{ File=$file; Publisher=$publisher; Signature=$signature }
+    $result=[pscustomobject]@{ File=$file; Publisher=$publisher; Signature=$signature }
+    $script:commandEvidenceCache[$Command]=$result
+    return $result
+}
+
+function Read-DriverReferences($Key,$References) {
+    foreach ($field in @('Service','UpperFilters','LowerFilters')) {
+        foreach ($value in @($Key.GetValue($field))) {
+            if ($value) { $References.Add([pscustomobject]@{ Source=$Key.Name; Reference="$value" }) }
+        }
+    }
+}
+function Get-InventoryTasks {
+    if ($null -eq $script:inventoryTasks) {
+        Write-Host '[SCAN] Loading scheduled tasks once for both review reports...'
+        $script:inventoryTasks=@(Get-ScheduledTask -ErrorAction Stop)
+    }
+    return $script:inventoryTasks
+}
+function Get-InventoryTaskXml($Task) {
+    $key=$Task.TaskPath+$Task.TaskName
+    if (-not $script:taskXmlCache.ContainsKey($key)) {
+        $script:taskXmlCache[$key]=Export-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath
+    }
+    return $script:taskXmlCache[$key]
 }
 function Add-StartupRow($Kind, $Name, $Location, $Command, $Enabled, $Original, $Supported) {
     $evidence=Get-CommandEvidence $Command
@@ -328,9 +364,10 @@ function Get-StartupInventory {
         }
     }
     Try-Operation 'Scan boot/logon scheduled tasks' {
-        foreach ($task in Get-ScheduledTask -ErrorAction Stop) {
+        foreach ($task in Get-InventoryTasks) {
             if (-not @($task.Triggers | Where-Object { $_.CimClass.CimClassName -in @('MSFT_TaskLogonTrigger','MSFT_TaskBootTrigger') }).Count) { continue }
-            $xml=Export-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath
+            Write-Host "[SCAN] Startup task: $($task.TaskPath)$($task.TaskName)"
+            $xml=Get-InventoryTaskXml $task
             $command=(@($task.Actions | ForEach-Object { '"'+$_.Execute+'" '+$_.Arguments }) -join ' ; ')
             $enabled=if ($task.Settings.Enabled) { 'Enabled' } else { 'Disabled' }
             # Do not offer Microsoft system tasks for automatic disabling.
@@ -341,6 +378,7 @@ function Get-StartupInventory {
     if ($script:target) {
         Try-Operation 'Scan packaged application startup tasks' {
             foreach ($app in Get-AppxPackage -User $script:target.Sid) {
+                Write-Host "[SCAN] App startup manifest: $($app.Name)"
                 if (-not $app.InstallLocation) { continue }
                 $manifest=Join-Path $app.InstallLocation 'AppxManifest.xml'
                 if (-not (Test-Path -LiteralPath $manifest)) { continue }
@@ -462,6 +500,169 @@ function Restore-Journal {
     Log 'NOTE' 'Copilot app' 'If removed, reinstall Microsoft Copilot manually from Microsoft Store. Recall snapshots cannot be restored.'
 }
 
+function Get-HealthComparison($Before,$After) {
+    $beforeMB=([double]$Before.TotalMemoryKB-[double]$Before.FreeMemoryKB)/1024
+    $afterMB=([double]$After.TotalMemoryKB-[double]$After.FreeMemoryKB)/1024
+    [pscustomobject]@{
+        BeforeTime=$Before.Time; AfterTime=$After.Time
+        BeforeProcessCount=$Before.ProcessCount; AfterProcessCount=$After.ProcessCount
+        ProcessCountChange=([int]$After.ProcessCount-[int]$Before.ProcessCount)
+        BeforeUsedMemoryMB=[math]::Round($beforeMB,2); AfterUsedMemoryMB=[math]::Round($afterMB,2)
+        UsedMemoryChangeMB=[math]::Round(($afterMB-$beforeMB),2)
+        Note='Change = after minus before; negative means reduced. System-wide used physical memory = visible total minus free. Immediate observations are not proof of performance improvement.'
+    }
+}
+function Write-HealthSnapshot($Label) {
+    Try-Operation "Health $Label" {
+        $osInfo=Get-CimInstance Win32_OperatingSystem
+        $processes=@(Get-Process)
+        $snapshot=[pscustomobject]@{
+            Time=(Get-Date).ToString('o'); LastBoot=$osInfo.LastBootUpTime
+            ProcessCount=$processes.Count; FreeMemoryKB=$osInfo.FreePhysicalMemory; TotalMemoryKB=$osInfo.TotalVisibleMemorySize
+            CpuLoadPercent=(Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average
+            Processes=@($processes | Select-Object Id,ProcessName,SessionId,CPU,WorkingSet64)
+            Sessions=(& "$env:SystemRoot\System32\quser.exe" 2>&1 | Out-String)
+            Note='Process CPU is cumulative time. No sessions terminated. Compare equivalent workloads after manual reboot.'
+        }
+        Write-Json $snapshot (Join-Path $RunDirectory "health-$Label-$(Get-Date -Format yyyyMMdd-HHmmss).json")
+        if ($Label -eq 'before') { $script:healthBefore=$snapshot }
+        elseif ($Label -eq 'after' -and $script:healthBefore) {
+            $comparison=Get-HealthComparison $script:healthBefore $snapshot
+            Write-Json $comparison (Join-Path $RunDirectory ("health-comparison-"+$Mode+'-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fff')+'.json'))
+            Write-Host 'Resource comparison (before -> after; change = after - before)'
+            Write-Host ("Processes: {0} -> {1}; change {2:+0;-0;0}" -f $comparison.BeforeProcessCount,$comparison.AfterProcessCount,$comparison.ProcessCountChange)
+            Write-Host ("Used physical memory: {0:N2} MB -> {1:N2} MB; change {2:+0.00;-0.00;0.00} MB" -f $comparison.BeforeUsedMemoryMB,$comparison.AfterUsedMemoryMB,$comparison.UsedMemoryChangeMB)
+            Write-Host 'Immediate observations only; background activity and pending restart affect results.'
+        } elseif ($Label -eq 'after') { Log 'SKIP' 'Resource comparison' 'Before snapshot unavailable.' }
+    }
+}
+function Add-Review($Kind,$Name,$Original,$Action,$Impact,$Supported=$true) {
+    $script:review.Add([pscustomobject]@{ Id=$script:review.Count+1; Kind=$Kind; Name=$Name; Original=$Original; Action=$Action; Impact=$Impact; Supported=$Supported })
+}
+function Write-ExtendedReview {
+    $script:review=New-Object 'System.Collections.Generic.List[object]'
+    Try-Operation 'Review services' {
+        foreach ($service in Get-CimInstance Win32_Service) {
+            if ($service.Name -in @('Fax','XboxGipSvc','XboxNetApiSvc','XblAuthManager','XblGameSave','Spooler','bthserv')) {
+                $key=Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$($service.Name)"
+                $wanted=if ($service.Name -eq 'Fax') {4} else {3}
+                if ($key.Start -ne $wanted) {
+                    Add-Review 'Service' $service.Name @{ Start=$key.Start; Wanted=$wanted; Path=$service.PathName } 'Change startup only' 'Confirm no need for automatic fax/Xbox/printing (including PDF)/Bluetooth. No running service stopped.'
+                }
+            } elseif ($service.StartMode -eq 'Auto') {
+                Write-Host "[SCAN] Automatic service: $($service.Name)"
+                $e=Get-CommandEvidence $service.PathName
+                if ($e.File -and $e.File -notlike "$env:SystemRoot\*" -and $e.Publisher -notmatch 'Microsoft') {
+                    Add-Review 'ThirdPartyService' $service.Name @{ Path=$service.PathName; Publisher=$e.Publisher; Signature=$e.Signature } 'ReadOnly' 'Dependencies/security/hardware needs not established; no automatic disable.' $false
+                }
+            }
+        }
+    }
+    Try-Operation 'Review optional Windows features (DISM may take time)' {
+        foreach ($feature in Get-WindowsOptionalFeature -Online | Where-Object { $_.State -eq 'Enabled' -and $_.FeatureName -in @('WindowsMediaPlayer','Printing-XPSServices-Features','FaxServicesClientPackage') }) {
+            Add-Review 'Feature' $feature.FeatureName @{ State='Enabled' } 'Disable, keep payload' 'Legacy player, XPS printing or fax may be needed. Manual restart may be needed.'
+        }
+    }
+    Try-Operation 'Review media capability (DISM may take time)' {
+        foreach ($cap in Get-WindowsCapability -Online -Name 'Media.WindowsMediaPlayer*' | Where-Object State -eq 'Installed') {
+            Add-Review 'Capability' $cap.Name @{ State='Installed' } 'Remove capability' 'Legacy media. Restore may require network/installation media and a restart.'
+        }
+    }
+    Try-Operation 'Review all third-party task triggers' {
+        foreach ($task in Get-InventoryTasks | Where-Object TaskPath -NotLike '\Microsoft\*') {
+            Write-Host "[SCAN] Review task: $($task.TaskPath)$($task.TaskName)"
+            $xml=Get-InventoryTaskXml $task
+            $command=(@($task.Actions | ForEach-Object { '"'+$_.Execute+'" '+$_.Arguments }) -join ' ; ')
+            $advice=Get-StartupAdvice $task.TaskName $command
+            $original=@{ Xml=$xml; TaskPath=$task.TaskPath; TaskName=$task.TaskName; Command=$command; Triggers=@($task.Triggers | ForEach-Object { $_.CimClass.CimClassName }); Enabled=$task.Settings.Enabled }
+            if ($task.Settings.Enabled -and $advice.Recommend) {
+                Add-Review 'Task' ($task.TaskPath+$task.TaskName) $original 'Disable' 'Optional launcher task. Read actions/triggers; updates/background actions stop.'
+            } else { Add-Review 'TaskInventory' ($task.TaskPath+$task.TaskName) $original 'ReadOnly' 'Unknown purpose/dependencies or already disabled; retained.' $false }
+            if ($task.Settings.Enabled -and $advice.Recommend -and @($task.Actions).Count -eq 1 -and @($task.Triggers).Count -eq 1 -and $original.Triggers[0] -eq 'MSFT_TaskLogonTrigger' -and $task.Principal.LogonType -eq 'Interactive') {
+                Add-Review 'Delay' ($task.TaskPath+$task.TaskName) $original 'Delay login by 60 seconds' 'Keeps auto-launch; do not select both disable and delay.'
+            }
+        }
+    }
+    Write-Json @($script:review.ToArray()) (Join-Path $RunDirectory 'extended-review.json')
+    $lines=@('# Extended review: explicit ReviewIds required; no selection means keep.','Excluded: SysMain, WSearch, wireless display, third-party app background permissions. System maintenance retained.')
+    foreach ($item in $script:review) {
+        $lines += "`n## #$($item.Id) $($item.Name)`nType: $($item.Kind); action: $($item.Action); selectable: $($item.Supported)`nImpact: $($item.Impact)`nEvidence/original:`n$($item.Original | ConvertTo-Json -Depth 15)"
+    }
+    $lines | Set-Content (Join-Path $RunDirectory 'extended-review.md') -Encoding UTF8
+    Log 'AWAITING_SELECTION' 'Extended review' 'Read extended-review.md; ApplyReview/ReviewIds required. Unknown services/tasks read-only.'
+}
+function Apply-ExtendedItem($Item) {
+    if (-not $Item.Supported) { throw 'Read-only item.' }
+    switch ($Item.Kind) {
+        'Service' {
+            if ($Item.Name -notin @('Fax','XboxGipSvc','XboxNetApiSvc','XblAuthManager','XblGameSave','Spooler','bthserv')) { throw 'Not allowlisted.' }
+            $path="HKLM:\SYSTEM\CurrentControlSet\Services\$($Item.Name)"
+            if ((Get-ItemProperty $path).Start -ne $Item.Original.Start) { throw 'State changed since review.' }
+            Change-Reg $path 'Start' $Item.Original.Wanted 'DWord' 'Review'
+            Log 'NOTE' $Item.Name 'Startup read back; takes effect after manual restart, current service untouched.'
+            return
+        }
+        { $_ -in @('Feature','Capability','Delay') } {
+            if ($Item.Kind -eq 'Feature' -and ($Item.Name -notin @('WindowsMediaPlayer','Printing-XPSServices-Features','FaxServicesClientPackage') -or (Get-WindowsOptionalFeature -Online -FeatureName $Item.Name).State -ne 'Enabled')) { throw 'Ineligible feature.' }
+            if ($Item.Kind -eq 'Capability' -and ($Item.Name -notmatch '^Media\.WindowsMediaPlayer\.' -or (Get-WindowsCapability -Online -Name $Item.Name).State -ne 'Installed')) { throw 'Ineligible capability.' }
+            if ($Item.Kind -eq 'Delay' -and (Export-ScheduledTask -TaskName $Item.Original.TaskName -TaskPath $Item.Original.TaskPath) -ne $Item.Original.Xml) { throw 'Task changed since review.' }
+            $entry=[pscustomobject]@{ Type='Extended'; Group='Review'; Item=$Item; Pending=$true; Restored=$false; AppliedXml=$null }
+            $script:journal.Changes += $entry; Save-Journal
+            if ($Item.Kind -eq 'Feature') {
+                $result=Disable-WindowsOptionalFeature -Online -FeatureName $Item.Name -NoRestart
+                if ((Get-WindowsOptionalFeature -Online -FeatureName $Item.Name).State -notin @('Disabled','DisablePending')) { throw 'Feature readback failed.' }
+            } elseif ($Item.Kind -eq 'Capability') {
+                $result=Remove-WindowsCapability -Online -Name $Item.Name
+                if ((Get-WindowsCapability -Online -Name $Item.Name).State -notin @('NotPresent','UninstallPending')) { throw 'Capability readback failed.' }
+            } else {
+                $old=$Item.Original
+                [xml]$xml=$old.Xml
+                $ns=New-Object Xml.XmlNamespaceManager($xml.NameTable); $ns.AddNamespace('t',$xml.DocumentElement.NamespaceURI)
+                $trigger=$xml.SelectSingleNode('/t:Task/t:Triggers/t:LogonTrigger',$ns)
+                if (-not $trigger) { throw 'No login trigger.' }
+                $delay=$trigger.SelectSingleNode('t:Delay',$ns)
+                if (-not $delay) { $delay=$xml.CreateElement('Delay',$xml.DocumentElement.NamespaceURI); $trigger.AppendChild($delay) | Out-Null }
+                $delay.InnerText='PT60S'; $entry.AppliedXml=$xml.OuterXml; Save-Journal
+                Register-ScheduledTask -TaskName $old.TaskName -TaskPath $old.TaskPath -Xml $xml.OuterXml -Force | Out-Null
+                [xml]$actual=Export-ScheduledTask -TaskName $old.TaskName -TaskPath $old.TaskPath
+                if ($actual.SelectSingleNode('/t:Task/t:Triggers/t:LogonTrigger/t:Delay',$ns).InnerText -ne 'PT60S') { throw 'Delay readback failed.' }
+                $entry.AppliedXml=$actual.OuterXml
+            }
+            Log 'NOTE' $Item.Name 'Configuration verified; manual restart may be needed.'
+        }
+        'Task' {
+            Disable-StartupRow ([pscustomobject]@{ Id="review-$($Item.Id)"; Kind='Task'; Name=$Item.Name; Supported=$true; Enabled='Enabled'; Original=$Item.Original })
+            return
+        }
+        default { throw 'Unsupported action.' }
+    }
+    $entry.Pending=$false; Save-Journal
+    Log 'VERIFIED' $Item.Name "Selected review #$($Item.Id) applied."
+}
+function Restore-Extended($Entry) {
+    $item=$Entry.Item
+    switch ($item.Kind) {
+        'Feature' {
+            $result=Enable-WindowsOptionalFeature -Online -FeatureName $item.Name -NoRestart
+            if ((Get-WindowsOptionalFeature -Online -FeatureName $item.Name).State -notin @('Enabled','EnablePending')) { throw 'Feature restore readback failed.' }
+        }
+        'Capability' {
+            $result=Add-WindowsCapability -Online -Name $item.Name
+            if ((Get-WindowsCapability -Online -Name $item.Name).State -notin @('Installed','InstallPending')) { throw 'Capability restore readback failed.' }
+        }
+        'Delay' {
+            $old=$item.Original
+            [xml]$current=Export-ScheduledTask -TaskName $old.TaskName -TaskPath $old.TaskPath
+            if ($current.OuterXml -ne $Entry.AppliedXml) { throw 'Task changed after delay; preserve it.' }
+            Register-ScheduledTask -TaskName $old.TaskName -TaskPath $old.TaskPath -Xml $old.Xml -Force | Out-Null
+            [xml]$check=Export-ScheduledTask -TaskName $old.TaskName -TaskPath $old.TaskPath
+            [xml]$original=$old.Xml
+            if ($check.OuterXml -ne $original.OuterXml) { throw 'Delay restore readback failed.' }
+        }
+        default { throw 'Unknown extended backup.' }
+    }
+}
+
 # Main: fresh independent run directories; follow-up modes require the exact original directory.
 $newRun=$Mode -in @('Disable','ScanStartup','Review')
 if ($newRun) {
@@ -472,7 +673,6 @@ if ($newRun) {
     & "$env:SystemRoot\System32\icacls.exe" $RunDirectory /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not secure backup directory; stopped before system changes.' }
     Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $RunDirectory 'Cleanup.ps1')
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ExtendedReview.ps1') -Destination (Join-Path $RunDirectory 'ExtendedReview.ps1')
     $script:journal=[pscustomobject]@{ Version=2; Computer=$env:COMPUTERNAME; Executor=$identity.User.Value; Target=$null; Created=(Get-Date).ToString('o'); Changes=@(); Drivers=@(); CopilotPackages=@() }
     foreach ($restore in @(@('Restore-CustomChanges.ps1','Restore'),@('Restore-SelectedDrivers.ps1','RestoreDrivers'))) {
         @"
@@ -492,7 +692,6 @@ if (Test-Path (Join-Path $RunDirectory 'report.json')) {
     foreach ($line in @(Get-Content (Join-Path $RunDirectory 'report.json') -Raw | ConvertFrom-Json)) { $script:report.Add($line) }
 }
 Start-Transcript -Path (Join-Path $RunDirectory ("$Mode-"+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.log')) -ErrorAction Stop | Out-Null
-. (Join-Path $PSScriptRoot 'ExtendedReview.ps1')
 try {
     $protectedBefore=Get-ProtectedServices
     Write-Json $protectedBefore (Join-Path $RunDirectory "$Mode-protected-before.json")

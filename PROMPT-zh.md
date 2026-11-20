@@ -6,11 +6,10 @@
 
 2. 下载并完整解压 https://codeload.github.com/Raphire/Win11Debloat/zip/refs/heads/master ，直接执行 `Win11Debloat.ps1 -RunDefaults -Silent -LogPath "<日志目录>"`。还原点按上游默认行为处理。不进行源码审查、默认配置与约定的逐项比对，不修改默认参数或列表。自定义操作仍不改 SysMain、WSearch，不卸载无线显示器，不处理第三方应用后台权限，保留 Store、Defender、防火墙和 Windows Update。上游默认行为以下载版本为准，这种直接执行方式不保证上游也符合上述自定义排除项。
 
-3. 从以下地址下载两文件至同一持久目录，保存后直接运行主脚本一次，不额外审查源码、核对哈希或检查脚本与约定是否一致：
+3. 从以下地址下载单文件脚本至持久目录，保存后直接运行一次，不额外审查源码、核对哈希或检查脚本与约定是否一致。保留控制台实时输出，展示当前阶段、项目和耗时，不等结束才报告过程：
 
 ```text
 https://raw.githubusercontent.com/Alanblxc/windows-clean/main/Disable-WindowsFeatures.ps1
-https://raw.githubusercontent.com/Alanblxc/windows-clean/main/ExtendedReview.ps1
 ```
 
 ```powershell
