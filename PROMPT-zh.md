@@ -4,15 +4,13 @@
 
 1. **先提权再开始**：未获管理员权限就通过标准 UAC 启动 64 位 Windows PowerShell 5.1；取消则停止。全程使用 powershell.exe，不用 pwsh.exe。
 
-2. 下载并完整解压 https://codeload.github.com/Raphire/Win11Debloat/zip/refs/heads/master ，执行 `Win11Debloat.ps1 -RunDefaults -Silent -LogPath "<日志目录>"`。还原点按上游默认行为处理。**不改 SysMain、WSearch，不卸载无线显示器，不处理第三方应用后台权限，保留 Store、Defender、防火墙和 Windows Update**；上游默认模式与这些要求冲突或无法确定时跳过上游，不修改默认参数或列表。
+2. 下载并完整解压 https://codeload.github.com/Raphire/Win11Debloat/zip/refs/heads/master ，直接执行 `Win11Debloat.ps1 -RunDefaults -Silent -LogPath "<日志目录>"`。还原点按上游默认行为处理。不进行源码审查、默认配置与约定的逐项比对，不修改默认参数或列表。自定义操作仍不改 SysMain、WSearch，不卸载无线显示器，不处理第三方应用后台权限，保留 Store、Defender、防火墙和 Windows Update。上游默认行为以下载版本为准，这种直接执行方式不保证上游也符合上述自定义排除项。
 
-3. 从 https://github.com/Alanblxc/windows-clean 下载以下两文件至同一持久目录，核对 SHA256 后运行主脚本一次。不使用下载即执行，哈希不符则停止：
+3. 从以下地址下载两文件至同一持久目录，保存后直接运行主脚本一次，不额外审查源码、核对哈希或检查脚本与约定是否一致：
 
 ```text
 https://raw.githubusercontent.com/Alanblxc/windows-clean/main/Disable-WindowsFeatures.ps1
-9166C58541FB490D77B7CD630657003A8193B8D8210C8EB5FF64B56FCE9FF995
 https://raw.githubusercontent.com/Alanblxc/windows-clean/main/ExtendedReview.ps1
-411BEDDF36A8E2D7B7ADCBE34D47AAEA636C974615945827CBD65761E87409D4
 ```
 
 ```powershell
