@@ -389,7 +389,7 @@ function Get-StartupInventory {
                 if (-not $app.InstallLocation) { continue }
                 $manifest=Join-Path $app.InstallLocation 'AppxManifest.xml'
                 if (-not (Test-Path -LiteralPath $manifest)) { continue }
-                [xml]$xml=Get-Content -LiteralPath $manifest -Raw
+                [xml]$xml=Get-Content -LiteralPath $manifest -Raw -Encoding UTF8
                 foreach ($node in $xml.SelectNodes("//*[local-name()='StartupTask']")) {
                     $taskId=$node.GetAttribute('TaskId')
                     $statePath="$($script:target.Hive)\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\SystemAppData\$($app.PackageFamilyName)\$taskId"
