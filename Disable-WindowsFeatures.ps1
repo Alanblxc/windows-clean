@@ -30,7 +30,16 @@ if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Pri
         if ($RunDirectory) { $arguments+=' -RunDirectory "'+$RunDirectory+'"' }
         if ($OneClick) { $arguments+=' -OneClick' }
         elseif ($AgentStage -eq 'Console') { $arguments+=' -ManualMenu' }
-        $process=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList $arguments -Wait -PassThru
+        $bootstrapLog=Join-Path ([IO.Path]::GetTempPath()) ('WindowsClean-elevated-'+[guid]::NewGuid().ToString('N')+'.log')
+        $invoke="& '"+$PSCommandPath.Replace("'","''")+"' -Mode Unified -AgentStage '"+$AgentStage+"' -Selection '"+$Selection.Replace("'","''")+"'"
+        if ($RunDirectory) { $invoke+=" -RunDirectory '"+$RunDirectory.Replace("'","''")+"'" }
+        if ($OneClick) { $invoke+=' -OneClick' } elseif ($AgentStage -eq 'Console') { $invoke+=' -ManualMenu' }
+        $bootstrap="Start-Transcript -LiteralPath '"+$bootstrapLog.Replace("'","''")+"' -Force | Out-Null; try { $invoke; exit 0 } catch { `$_ | Out-String | Write-Output; exit 1 } finally { Stop-Transcript | Out-Null }"
+        $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
+        Write-Host "[UAC] Elevated output: $bootstrapLog"
+        $process=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -EncodedCommand '+$encoded) -Wait -PassThru
+        if (Test-Path -LiteralPath $bootstrapLog) { Get-Content -LiteralPath $bootstrapLog | Write-Output }
+        if ($process.ExitCode -ne 0) { Write-Output "[FAILED] Elevated exit=$($process.ExitCode); diagnostic log: $bootstrapLog" }
         exit $process.ExitCode
     }
     # Escapes keep this file compatible with Windows PowerShell 5.1 without a UTF-8 BOM.
@@ -730,22 +739,90 @@ function Invoke-ComponentCleanup {
     if ($code -notin @(0,3010)) { throw "DISM component cleanup failed: $code. See $logPath" }
     Log 'VERIFIED' 'WinSxS' "DISM exit=$code; restart required=$($code -eq 3010). Component cleanup has no custom undo."
 }
+function Invoke-IntegratedRestorePoint {
+    $key=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' -ErrorAction Stop
+    if ($key.RPSessionInterval -eq 0) { Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction Stop }
+    $recent=@(Get-ComputerRestorePoint -ErrorAction Stop | Where-Object { (Get-Date)-[Management.ManagementDateTimeConverter]::ToDateTime($_.CreationTime) -le [TimeSpan]::FromHours(24) })
+    if ($recent.Count) { Log 'NOTE' 'Restore point' 'Recent restore point exists; not creating another.'; return }
+    Checkpoint-Computer -Description 'WindowsClean before cleanup' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+    Log 'NOTE' 'Restore point' 'Creation command completed; restore point does not replace per-setting backups.'
+}
+function Invoke-IntegratedDefault($Name) {
+    # Registry operations adapted from Raphire/Win11Debloat, MIT; see THIRD-PARTY-LICENSE.txt.
+    $hive=if ($script:target) {$script:target.Hive} else {$null}
+    $advanced='Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+    $content='Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+    $values=@()
+    switch ($Name) {
+        'DisableSuggestions' {
+            foreach ($value in @('SubscribedContent-310093Enabled','SubscribedContent-338388Enabled','SystemPaneSuggestionsEnabled','SubscribedContent-338389Enabled','SoftLandingEnabled','SubscribedContent-338393Enabled','SubscribedContent-353694Enabled','SubscribedContent-353696Enabled','SubscribedContent-353698Enabled','SilentInstalledAppsEnabled')) { $values+=,@('User',$content,$value,0) }
+            foreach ($value in @('Start_IrisRecommendations','ShowSyncProviderNotifications','Start_AccountNotifications')) { $values+=,@('User',$advanced,$value,0) }
+            $values+=,@('User','Software\Microsoft\Windows\CurrentVersion\SystemSettings\AccountNotifications','EnableAccountNotifications',0)
+            $values+=,@('User','Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement','ScoobeSystemSettingEnabled',0)
+            $values+=,@('User','Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\Windows.SystemToast.Suggested','Enabled',0)
+            $values+=,@('User','Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\Windows.SystemToast.BackupReminder','Enabled',0)
+            $values+=,@('User','Software\Microsoft\Windows\CurrentVersion\Mobility','OptedIn',0)
+            $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Windows\CloudContent','DisableCopilotPinScreen',1)
+            $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Windows\Explorer','HideRecommendedPersonalizedSites',1)
+        }
+        'DisableEdgeAds' {
+            foreach ($value in @('NewTabPageContentEnabled','EdgeShoppingAssistantEnabled','TabServicesEnabled','AlternateErrorPagesEnabled','UserFeedbackAllowed','ShowRecommendationsEnabled','WalletDonationEnabled','ShowMicrosoftRewards','DefaultBrowserSettingEnabled','DefaultBrowserSettingsCampaignEnabled','SpotlightExperiencesAndRecommendationsEnabled','ShowAcrobatSubscriptionButton')) { $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Edge',$value,0) }
+            foreach ($value in @('NewTabPageHideDefaultTopSites','HideFirstRunExperience')) { $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Edge',$value,1) }
+        }
+        'DisableLockscreenTips' {
+            foreach ($value in @('SubscribedContent-338387Enabled','RotatingLockScreenOverlayEnabled')) { $values+=,@('User',$content,$value,0) }
+        }
+        'DisableBing' {
+            $values+=,@('User','Software\Policies\Microsoft\Windows\Explorer','DisableSearchBoxSuggestions',1)
+            foreach ($value in @('AllowCortana','CortanaConsent')) { $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Windows\Windows Search',$value,0) }
+        }
+        'DisableCopilot' {
+            if ([int]$os.CurrentBuildNumber -lt 22621) { return }
+            $values+=,@('User',$advanced,'ShowCopilotButton',0)
+            $values+=,@('User','Software\Policies\Microsoft\Windows\WindowsCopilot','TurnOffWindowsCopilot',1)
+            $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot','TurnOffWindowsCopilot',1)
+        }
+        'DisableRecall' {
+            if ([int]$os.CurrentBuildNumber -lt 22621) { return }
+            $values+=,@('User','Software\Policies\Microsoft\Windows\WindowsAI','DisableAIDataAnalysis',1)
+            foreach ($value in @('DisableAIDataAnalysis','TurnOffSavingSnapshots')) { $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Windows\WindowsAI',$value,1) }
+            $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Windows\WindowsAI','AllowRecallEnablement',0)
+        }
+        'DisableClickToDo' {
+            if ([int]$os.CurrentBuildNumber -lt 22621) { return }
+            $values+=,@('User','Software\Policies\Microsoft\Windows\WindowsAI','DisableClickToDo',1)
+            $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Windows\WindowsAI','DisableClickToDo',1)
+        }
+        'DisableAISvcAutoStart' {
+            $path='HKLM:\SYSTEM\CurrentControlSet\Services\WSAIFabricSvc'
+            if ([int]$os.CurrentBuildNumber -ge 22621 -and (Test-Path $path)) { Change-Reg $path 'Start' 3 'DWord' 'IntegratedDefaults' }
+        }
+        'HideChat' {
+            if ([int]$os.CurrentBuildNumber -gt 22621) { return }
+            $values+=,@('User',$advanced,'TaskbarMn',0)
+            $values+=,@('User','Software\Microsoft\Windows\CurrentVersion\Policies\Explorer','HideSCAMeetNow',1)
+        }
+        'ShowKnownFileExt' { $values+=,@('User',$advanced,'HideFileExt',0) }
+        'Hide3dObjects' { Log 'NOT_APPLICABLE' $Name 'Upstream supports this only before Windows 11.' }
+        'DisableModernStandbyNetworking' {
+            $standby=(& "$env:SystemRoot\System32\powercfg.exe" /a 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0 -or $standby -notmatch '(?im)^\s*[^\r\n]*\(S0[^\r\n]*\)') { Log 'SKIP' $Name 'Modern Standby support not established.'; return }
+            foreach ($value in @('ACSettingIndex','DCSettingIndex')) { $values+=,@('Machine','SOFTWARE\Policies\Microsoft\Power\PowerSettings\f15576e8-98b7-4186-b944-eafa664402d9',$value,0) }
+        }
+        'DisableStoreSearchSuggestions' { Log 'SKIP' $Name 'Upstream denies Everyone access to Store database; omitted to preserve Store access.' }
+        default { throw "Unknown integrated default: $Name" }
+    }
+    foreach ($value in $values) {
+        if ($value[0] -eq 'User' -and -not $hive) { Log 'SKIP' $Name 'No reliable target hive.'; continue }
+        $path=if ($value[0] -eq 'User') { "$hive\$($value[1])" } else { "HKLM:\$($value[1])" }
+        Change-Reg $path $value[2] $value[3] 'DWord' 'IntegratedDefaults'
+    }
+    if ($values.Count) { Log 'VERIFIED' $Name 'Applicable registry values processed through original-state journal; ALREADY/SKIP details above.' }
+}
 function Invoke-UnifiedCleanup {
     if ($OneClick -and $AgentStage -ne 'Console') { throw 'OneClick cannot be combined with agent stages.' }
     if ($AgentStage -in @('Scan','Apply') -and (Test-Path (Join-Path $RunDirectory 'selection.json'))) { throw 'This run has already started applying. Inspect its logs; do not apply it twice.' }
     if ($management -ne 'Personal') { throw 'Managed/enrolled or unknown management state: no unified changes permitted.' }
-    $vendor=Join-Path $PSScriptRoot 'vendor\Win11Debloat'
-    if ($script:embeddedUpstream) {
-        $vendor=Join-Path $RunDirectory 'embedded-source\Win11Debloat'
-        if (-not (Test-Path (Join-Path $vendor 'Win11Debloat.ps1'))) {
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            $archive=Join-Path $RunDirectory 'embedded-upstream.zip'
-            [IO.File]::WriteAllBytes($archive,[Convert]::FromBase64String($script:embeddedUpstream))
-            [IO.Compression.ZipFile]::ExtractToDirectory($archive,(Join-Path $RunDirectory 'embedded-source'))
-            Remove-Item -LiteralPath $archive -Force
-        }
-    }
-    if (-not (Test-Path (Join-Path $vendor 'Win11Debloat.ps1'))) { throw 'Download/extract the complete windows-clean repository, including vendor.' }
     $rows=@()
     $script:review=@()
     $options=@(
@@ -757,18 +834,15 @@ function Invoke-UnifiedCleanup {
         [pscustomobject]@{Id='X1';Default=$false;Label='Scan startup candidates (including Xbox); choose individual items after scanning'},
         [pscustomobject]@{Id='X2';Default=$false;Label='Scan service/task/optional-component candidates (DISM may take time); choose items after scanning'}
     )
-    $defaults=Get-Content (Join-Path $vendor 'Config\DefaultSettings.json') -Raw | ConvertFrom-Json
-    $labels=(Get-Content (Join-Path $vendor 'Config\Languages\zh-CN\Features.json') -Raw -Encoding UTF8 | ConvertFrom-Json).Features
-    # Upstream telemetry edits Defender; widgets force-kills processes. Use custom settings instead.
-    $upstream=@($defaults.Settings | Where-Object { $_.Name -notin @('CreateRestorePoint','DisableTelemetry','DisableWidgets') })
+    $upstream=@('DisableSuggestions','DisableEdgeAds','DisableLockscreenTips','DisableBing','DisableStoreSearchSuggestions','DisableCopilot','DisableRecall','DisableClickToDo','DisableAISvcAutoStart','HideChat','ShowKnownFileExt','Hide3dObjects','DisableModernStandbyNetworking' | ForEach-Object { [pscustomobject]@{Name=$_} })
     $n=0
     foreach ($setting in $upstream) {
         $n++
-        $options+=[pscustomobject]@{Id="U$n";Default=$true;Label="Win11Debloat: $($setting.Name) - $($labels.($setting.Name).Label)"}
+        $options+=[pscustomobject]@{Id="U$n";Default=$true;Label="Integrated defaults: $($setting.Name)"}
     }
     Write-Host "`nSelect BEFORE scanning/applying. Enter comma-separated IDs; Enter=G/U defaults; NONE=cancel. X1/X2 scans are opt-in." -ForegroundColor Yellow
-    Write-Host 'Upstream restore point follows its own behavior; not guaranteed. Upstream backups and custom restore are separate.'
-    Write-Host 'Upstream telemetry/widgets excluded to preserve Defender and avoid forced process termination; G1 covers custom settings.'
+    Write-Host 'Integrated defaults use the custom journal. Restore point may fail; see actual report.'
+    Write-Host 'Defender and Store database permissions are preserved. No forced process termination.'
     foreach ($option in $options) { Write-Host ("{0} {1}: {2}" -f $(if ($option.Default) {'[*]'} else {'[ ]'}),$option.Id,$option.Label) }
     Write-Json $options (Join-Path $RunDirectory 'available-options.json')
     if ($AgentStage -eq 'Options') {
@@ -830,19 +904,9 @@ function Invoke-UnifiedCleanup {
     Write-Json ([pscustomobject]@{Selected=$selected;Time=(Get-Date).ToString('o')}) (Join-Path $RunDirectory 'selection.json')
     $script:selectedCleanupIds=$selected
     if (-not $selected.Count) { Log 'NOTE' 'Selection' 'Cancelled; no cleanup performed.'; return }
-    # Isolate upstream script scope and retain the exact source used for this run.
-    if (-not $script:target -or $identity.User.Value -ne $script:target.Sid) { throw 'Unified upstream execution requires the active user and administrator to be the same account.' }
-    Copy-Item -LiteralPath $vendor -Destination (Join-Path $RunDirectory 'Win11Debloat') -Recurse
-    $tweaks=@(); $n=0
-    foreach ($setting in $upstream) { $n++; if ("U$n" -in $selected) { $tweaks+=@{Name=$setting.Name;Value=$true} } }
-    $configPath=Join-Path $RunDirectory 'upstream-config.json'
-    Write-Json @{Version='1.0';Tweaks=$tweaks;Deployment=@(@{Name='CreateRestorePoint';Value=$true},@{Name='RestartExplorer';Value=$false})} $configPath
-    $upstreamLogs=Join-Path $RunDirectory 'upstream-logs'
-    Try-Operation 'Win11Debloat selected settings and restore point' {
-        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RunDirectory 'Win11Debloat\Win11Debloat.ps1') -Config $configPath -Silent -SkipExplorerRestart -LogPath $upstreamLogs
-        if ($LASTEXITCODE -ne 0) { throw "Win11Debloat exit=$LASTEXITCODE; inspect upstream logs." }
-        Log 'NOTE' 'Win11Debloat' 'Process completed; consult upstream logs for individual failures and actual restore point status.'
-    }
+    Try-Operation 'System restore point' { Invoke-IntegratedRestorePoint }
+    $n=0
+    foreach ($setting in $upstream) { $n++; if ("U$n" -in $selected) { Try-Operation $setting.Name { Invoke-IntegratedDefault $setting.Name } } }
     if ('G1' -in $selected) { Try-Operation 'Custom privacy settings' { Invoke-BaseSettings } }
     if ('G2' -in $selected) { Try-Operation 'Game settings' { Invoke-GameSettings } }
     if ('G3' -in $selected) { Try-Operation 'Selected drivers' { Invoke-SelectedDrivers } }

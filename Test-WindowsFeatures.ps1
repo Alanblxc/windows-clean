@@ -63,7 +63,7 @@ try { Change-Reg 'Fake:\Key' 'Test' 0 } catch { $caught=$true }
 Assert ($caught -and -not $script:writeCalled) 'Backup failure must prevent mutation'
 $source=$ast.Extent.Text
 Assert ($source.Contains('[switch]$OneClick = ($Mode -eq ''Unified'' -and $AgentStage -eq ''Console'' -and -not $ManualMenu)')) 'Default Unified execution must be one-click; explicit agent stages remain independent'
-Assert ($source -notmatch '(?i)Checkpoint-Computer|Enable-ComputerRestore') 'Custom script must leave restore points to upstream'
+Assert ($source -match 'function Invoke-IntegratedRestorePoint') 'Restore point logic is now local'
 Assert ($source -notmatch '(?i)Invoke-WebRequest|codeload\.github|RunDefaults') 'Unified mode uses vendored source and explicit config, no runtime downloads/default execution'
 foreach ($name in @('Resolve-CleanupSelection','Invoke-ComponentCleanup','Invoke-TempCleanup','Invoke-UnifiedCleanup')) {
     $definition=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq $name
@@ -83,7 +83,7 @@ $component=$ast.FindAll({param($node) $node -is [System.Management.Automation.La
 Assert ($component.Extent.Text -match '/StartComponentCleanup /NoRestart' -and $component.Extent.Text -notmatch '/ResetBase') 'Component cleanup uses servicing API without ResetBase'
 Assert ($component.Extent.Text -match '0,3010') 'DISM success and pending-restart exit codes recognized'
 $unified=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq 'Invoke-UnifiedCleanup'
-Assert ($unified.Extent.Text.IndexOf("Read-Host 'IDs'") -lt $unified.Extent.Text.IndexOf('Copy-Item -LiteralPath $vendor')) 'Selection precedes applying upstream/custom changes'
+Assert ($unified.Extent.Text.IndexOf("Read-Host 'IDs'") -lt $unified.Extent.Text.IndexOf("Try-Operation 'System restore point'")) 'Selection precedes applying changes'
 Assert ($unified.Extent.Text.IndexOf("Read-Host 'IDs'") -lt $unified.Extent.Text.IndexOf('Get-StartupInventory')) 'Menu must precede expensive startup inventory'
 Assert ($unified.Extent.Text.Contains('if (''X1'' -in $selected)')) 'Startup scan must be opt-in'
 Assert ($unified.Extent.Text.Contains('if (''X2'' -in $selected)')) 'Extended DISM/task/service scan must be opt-in'
@@ -102,15 +102,25 @@ $sampleReview=@(
     [pscustomobject]@{Id=6;Supported=$true;Kind='Delay';Name='\Steam'},
     [pscustomobject]@{Id=7;Supported=$false;Kind='ThirdPartyService';Name='Unknown'})
 Assert ((@(Get-OneClickCandidateIds $sampleRows $sampleReview) -join ',') -eq 'S1,R4') 'OneClick preserves printing/fax/XPS/unknown and avoids duplicate/contradictory task actions'
-Assert ($unified.Extent.Text -match '-SkipExplorerRestart') 'Upstream cannot restart Explorer'
-Assert ($unified.Extent.Text -match "'CreateRestorePoint','DisableTelemetry','DisableWidgets'") 'Conflicting upstream effects are excluded'
+Assert ($unified.Extent.Text -notmatch 'embeddedUpstream|upstream-config|Win11Debloat.ps1') 'No upstream extraction or child executor'
 $tempFunction=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq 'Invoke-TempCleanup'
 Assert ($tempFunction.Extent.Text -match 'ReparsePoint' -and $tempFunction.Extent.Text -match 'AddDays\(-7\)' -and $tempFunction.Extent.Text -notmatch 'Remove-Item[^\r\n]*-Recurse') 'Temporary cleanup skips links and deletes only aged individual files'
-$configValidator=Join-Path $PSScriptRoot 'vendor\Win11Debloat\Scripts\Helpers\Test-ConfigConsistency.ps1'
-. $configValidator
-function Get-Translation { param($Key) return $Key }
-Assert ($null -eq (Test-ConfigConsistency ([pscustomobject]@{Version='1.0';Tweaks=@(@{Name='DisableBing';Value=$true});Deployment=@(@{Name='CreateRestorePoint';Value=$true},@{Name='RestartExplorer';Value=$false})}))) 'Generated config shape accepted by actual upstream validator'
+$integrated=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq 'Invoke-IntegratedDefault'
+. ([scriptblock]::Create($integrated.Extent.Text))
+$script:target=[pscustomobject]@{Hive='Fake:\User'}
+$os=[pscustomobject]@{CurrentBuildNumber=26100}
+$script:captured=New-Object 'System.Collections.Generic.List[object]'
+function Log { param($Status,$Item,$Detail) }
+function Change-Reg($Path,$Name,$Value,$Kind,$Group) { $script:captured.Add(@($Path,$Name,$Value,$Kind,$Group)) }
+Invoke-IntegratedDefault 'DisableEdgeAds'
+Assert ($script:captured.Count -eq 14) 'All 14 upstream Edge default values copied'
+$script:captured.Clear()
+Invoke-IntegratedDefault 'DisableSuggestions'
+Assert ($script:captured.Count -eq 20) 'All 20 upstream suggestions values copied'
+$script:captured.Clear()
+Invoke-IntegratedDefault 'DisableRecall'
+Assert ($script:captured.Count -eq 4 -and $script:captured[0][0] -like 'Fake:\User*') 'Recall values use actual target hive and journal writer'
 Assert ($source -notmatch '(?i)Restart-Computer|Stop-Computer|logoff\.exe|shutdown\.exe') 'No automatic restart/logoff'
 Assert ($source -notmatch '(?i)Set-Service\s+[''"]?(WSearch|GamingServices|GamingServicesNet|GameInput)') 'Protected services are not modified'
 Assert ($source -notmatch '(?i)Stop-Process|taskkill') 'No forced process termination'
-Write-Output 'PASS: syntax; decision/resource/selection tests; upstream config validator; task/XML cache and streaming dependencies; backup failure; DISM/temp/upstream safeguards. No cleanup code executed.'
+Write-Output 'PASS: syntax; decision/resource/selection tests; integrated default value tests; task/XML cache; backup failure; DISM/temp safeguards. No cleanup executed.'
