@@ -1,10 +1,11 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Disable','ScanStartup','DisableStartup','Restore','RestoreDrivers')]
+    [ValidateSet('Disable','ScanStartup','DisableStartup','Review','ApplyReview','Restore','RestoreDrivers')]
     [string]$Mode = 'Disable',
     [string]$RunDirectory,
-    [int[]]$StartupIds = @()
+    [int[]]$StartupIds = @(),
+    [int[]]$ReviewIds = @()
 )
 
 # Windows PowerShell 5.1 only. No downloads, UAC, restart or Win11Debloat execution.
@@ -89,7 +90,7 @@ function Change-Reg($Path, $Name, $Value, $Kind='DWord', $Group='Settings') {
     Log 'WRITTEN' $Name 'Backed up and read back; runtime effect not tested.'
 }
 function Get-ProtectedServices {
-    @(foreach ($name in @('WSearch','GamingServices','GamingServicesNet')) {
+    @(foreach ($name in @('WSearch','SysMain','GamingServices','GamingServicesNet')) {
         $service = Get-Service -Name $name -ErrorAction SilentlyContinue
         if ($service) {
             $key = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$name"
@@ -418,6 +419,7 @@ function Restore-Journal {
         if ($entry.Restored -or ($Mode -eq 'RestoreDrivers' -and $entry.Group -ne 'Drivers')) { continue }
         Try-Operation "Restore $($entry.Type)" {
             switch ($entry.Type) {
+                'Extended' { Restore-Extended $entry }
                 { $_ -in @('Registry','StartupRegistry') } {
                     $old=$entry.Original
                     $current=Get-RegOriginal $old.Path $old.Name
@@ -461,7 +463,7 @@ function Restore-Journal {
 }
 
 # Main: fresh independent run directories; follow-up modes require the exact original directory.
-$newRun=$Mode -in @('Disable','ScanStartup')
+$newRun=$Mode -in @('Disable','ScanStartup','Review')
 if ($newRun) {
     if ($RunDirectory) { throw 'Disable/ScanStartup creates a new run. Do not supply RunDirectory.' }
     $RunDirectory=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ("WindowsCustomCleanup\"+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
@@ -470,6 +472,7 @@ if ($newRun) {
     & "$env:SystemRoot\System32\icacls.exe" $RunDirectory /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not secure backup directory; stopped before system changes.' }
     Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $RunDirectory 'Cleanup.ps1')
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ExtendedReview.ps1') -Destination (Join-Path $RunDirectory 'ExtendedReview.ps1')
     $script:journal=[pscustomobject]@{ Version=2; Computer=$env:COMPUTERNAME; Executor=$identity.User.Value; Target=$null; Created=(Get-Date).ToString('o'); Changes=@(); Drivers=@(); CopilotPackages=@() }
     foreach ($restore in @(@('Restore-CustomChanges.ps1','Restore'),@('Restore-SelectedDrivers.ps1','RestoreDrivers'))) {
         @"
@@ -489,22 +492,28 @@ if (Test-Path (Join-Path $RunDirectory 'report.json')) {
     foreach ($line in @(Get-Content (Join-Path $RunDirectory 'report.json') -Raw | ConvertFrom-Json)) { $script:report.Add($line) }
 }
 Start-Transcript -Path (Join-Path $RunDirectory ("$Mode-"+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.log')) -ErrorAction Stop | Out-Null
+. (Join-Path $PSScriptRoot 'ExtendedReview.ps1')
 try {
     $protectedBefore=Get-ProtectedServices
     Write-Json $protectedBefore (Join-Path $RunDirectory "$Mode-protected-before.json")
     $script:target=$null
     try { $script:target=Get-TargetUser } catch { Log 'SKIP' 'User settings' $_.Exception.Message }
     $management=Get-ManagementState
+    Write-HealthSnapshot 'before'
     Log 'NOTE' 'Environment' "Build=$($os.CurrentBuildNumber); Edition=$($os.EditionID); Management=$management; Directory=$RunDirectory"
     if ($newRun) { $script:journal.Target=$script:target; Save-Journal }
     elseif ($script:journal.Target -and (-not $script:target -or $script:target.Sid -ne $script:journal.Target.Sid)) { throw 'Original target user is no longer uniquely active in this session; stopped.' }
 
-    if ($Mode -in @('Restore','RestoreDrivers','DisableStartup') -and $management -ne 'Personal') {
+    if ($Mode -in @('Restore','RestoreDrivers','DisableStartup','ApplyReview') -and $management -ne 'Personal') {
         throw 'Managed/enrolled or unknown management state: no writes permitted.'
     }
     switch ($Mode) {
         'Disable' {
             if ($management -eq 'Personal') {
+                Try-Operation 'System restore point' {
+                    Checkpoint-Computer -Description 'WindowsCustomCleanup before changes' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+                    Log 'NOTE' 'Restore point' 'Checkpoint requested; Windows protection and frequency limits apply. Per-item backups still required.'
+                }
                 Invoke-BaseSettings
                 Try-Operation 'Game settings' { Invoke-GameSettings }
                 Invoke-SelectedDrivers
@@ -519,9 +528,24 @@ try {
                 }
             }
             Write-StartupReview $rows
+            Write-ExtendedReview
             Log 'NOTE' 'Xbox packaged StartupTask' 'Manifest/state inventoried. Direct registry State editing is not a supported external API; uncertain Xbox startup mechanisms are preserved and reported.'
         }
         'ScanStartup' { Write-StartupReview (Get-StartupInventory) }
+        'Review' { Write-StartupReview (Get-StartupInventory); Write-ExtendedReview }
+        'ApplyReview' {
+            if (-not $ReviewIds.Count) { throw 'Explicit ReviewIds required.' }
+            $items=@(Get-Content (Join-Path $RunDirectory 'extended-review.json') -Raw | ConvertFrom-Json)
+            foreach ($id in ($ReviewIds | Sort-Object -Unique)) {
+                $found=@($items | Where-Object Id -eq $id)
+                if ($found.Count -ne 1 -or -not $found[0].Supported) { throw "Invalid or read-only review ID: $id" }
+            }
+            $selected=@($items | Where-Object { $_.Id -in $ReviewIds })
+            if (@($selected | Group-Object Name | Where-Object Count -gt 1).Count) { throw 'Choose only one action per item: disable OR delay.' }
+            foreach ($id in ($ReviewIds | Sort-Object -Unique)) {
+                Try-Operation "Review #$id" { Apply-ExtendedItem ($items | Where-Object Id -eq $id) }
+            }
+        }
         'DisableStartup' {
             if (-not $StartupIds.Count) { throw 'Explicit -StartupIds required. Silence is not consent.' }
             $rows=@(Get-Content (Join-Path $RunDirectory 'startup-review.json') -Raw | ConvertFrom-Json)
@@ -539,6 +563,7 @@ try {
     }
 } catch { Log 'FAILED' $Mode $_.Exception.Message }
 finally {
+    Write-HealthSnapshot 'after'
     Try-Operation 'Protected services check' {
         $after=Get-ProtectedServices
         Write-Json $after (Join-Path $RunDirectory "$Mode-protected-after.json")

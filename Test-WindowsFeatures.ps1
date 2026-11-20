@@ -4,6 +4,10 @@ $path = Join-Path $PSScriptRoot 'Disable-WindowsFeatures.ps1'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors.Message -join "`n") }
+$extraTokens=$null; $extraErrors=$null
+$extraAst=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'ExtendedReview.ps1'),[ref]$extraTokens,[ref]$extraErrors)
+if ($extraErrors.Count) { throw ($extraErrors.Message -join "`n") }
+if ($extraAst.Extent.Text -match '(?i)WirelessDisplay|AppPrivacy|SysMain.*Set-Service') { throw 'Excluded changes found in extension.' }
 function Assert($Condition, $Message) { if (-not $Condition) { throw $Message } }
 foreach ($name in @('Get-DriverDecision', 'Get-StartupAdvice')) {
     $definition = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |

@@ -44,10 +44,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<完整解压路径>\Wi
 预期脚本 SHA256（大小写不敏感）：
 
 ```text
-CA32201F67114C481A456352AC4F817562816F12121C0069D43F075124524ED0
+C21345DB114F93EBFBA3D509E8C8D18E23F7B03AA6E887EF077C469FE5C624CC
 ```
 
 - 将脚本保存到本轮下载目录，用 `Get-FileHash -Algorithm SHA256` 核对。哈希不符则停止自定义脚本步骤并报告；不自行更新预期哈希，也不执行不匹配的代码。
+- 还必须下载 https://raw.githubusercontent.com/Alanblxc/windows-clean/main/ExtendedReview.ps1 到主脚本同目录，SHA256 必须为 `B6892C4002CB6BCED02E65081C64F9714A688DA055B4224CEFBEF3CBF5A2275B`。两个文件全部核对成功后才能执行；后续选择模式也要重新校验两个文件。
 - 读取说明并审核实际脚本，确认只在约定范围内修改。不要使用 `irm | iex` 等下载即执行方式。
 - 如果脚本要求、跳过条件或实际能力和本提示词冲突，采用更保守的限制并记录，不临时猜测注册表、绕过检查或补装第三方组策略工具。
 - 仅执行一次默认模式：
@@ -59,6 +60,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<本轮下载目录>\Di
 脚本创建自己的 `%ProgramData%\WindowsCustomCleanup\日期时间-随机标识` 目录。读取输出，记录其**实际绝对路径**，不要猜测或引用其他轮次的路径。
 
 ### 自定义修改范围与保留项
+
+- **最新限制优先：SysMain 不修改，无线显示器不卸载，不处理第三方应用逐个后台权限。** 此限制也用于审核上游默认模式；冲突则跳过上游，不擅自改参数。WSearch 继续保留。
+- 默认会尝试创建还原点并记录 CPU/内存/进程及登录会话前后快照。失败如实报告，不为创建还原点强行启用系统保护。会话只读，不注销其他用户。
+- 读取本轮 `extended-review.md/json`：包括 Fax、Xbox 配套服务、打印/蓝牙服务、旧媒体播放器/XPS/传真可选功能、第三方后台服务和全部触发类型的第三方计划任务。未知服务/任务只读；不动系统维护任务。
+- 对可选项目先展示原状态、用途及影响，等待明确编号；选择后在 Windows PowerShell 5.1 调用 `& "<下载目录>\Disable-WindowsFeatures.ps1" -Mode ApplyReview -RunDirectory "<真实本轮目录>" -ReviewIds 2,5`。编号必须替换成实际选择；不支持项目不得绕过。延迟启动仅针对符合条件的现有登录任务设 60 秒；同一任务不可同时选择禁用和延迟。
+- 可选功能恢复可能需要联网或安装源，不承诺备份包含安装文件。每季度可手动用 `-Mode Review` 只读复查，不创建自动精简计划任务；重启后等 3～5 分钟在相近负载下比较资源，不承诺固定进程数或开机耗时。
 
 - 禁用 RmSvc、诊断服务，尽可能降低 Windows 遥测；不承诺遥测归零。RmSvc 可能影响飞行模式及 Wi-Fi/蓝牙开关。
 - 关闭旧 Copilot 入口、Recall、小组件；已授权卸载目标用户的 Microsoft Copilot 独立应用，但不影响其他用户或 Edge。账户不同而脚本跳过时如实报告，不绕过。
