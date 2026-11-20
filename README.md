@@ -1,30 +1,41 @@
-# windows-clean
+# Windows clean
 
-Windows 11 自定义精简脚本：逐轮真实备份、保守驱动检测、自启动先审核后选择。**不内置、不下载、不运行 Win11Debloat。**
+[中文说明](README-zh.md) · [AI 执行提示词](PROMPT-zh.md)
 
-- [中文说明与运行方法](README-zh.md)
-- [给本机 AI 使用的完整提示词](PROMPT-zh.md)：保留 Win11Debloat 官方默认流程，再校验并调用本仓库脚本。
-- [主脚本](Disable-WindowsFeatures.ps1)
-- [非破坏性检查](Test-WindowsFeatures.ps1)
+A Windows 11 cleanup entry that combines custom cleanup with a complete, pinned copy of [Win11Debloat](https://github.com/Raphire/Win11Debloat). Scan, choose options before changes, then execute the selection in one run. Download/extract the **whole repository**, including `vendor`; the entry is no longer a standalone download.
 
-需要管理员权限及 **64 位 Windows PowerShell 5.1**。运行前阅读中文说明和源码；不使用下载即执行。额外自启动不会自动禁用，必须明确选择编号。
+Run from 64-bit Windows PowerShell 5.1:
 
-## 校验当前脚本
-
-SHA256：
-
-```text
-F50E8055A072B4A5526B4D9AECB7E78D43403008D74C3960D8CD841731CD4F77
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Disable-WindowsFeatures.ps1
 ```
 
-更新主脚本时必须同步重新核对并更新此处和提示词的哈希。哈希仅验证文件与预期一致，不替代代码审核。
+The entry requests UAC if needed. Windows 11 and an administrator account matching the active desktop user are required for unified execution. Managed/enrolled or uncertain systems are blocked. No actual cleanup has been run on the development machine.
 
-现在只需下载一个 `Disable-WindowsFeatures.ps1`，扩展功能已合并。控制台实时输出项目、扫描进度和耗时。任务清单/XML、重复签名查询在本轮复用；驱动注册表依赖流式读取，保留不确定时跳过的规则。尚未测量目标机器端到端耗时，不承诺固定提速比例。
+The console first scans startup entries, services, scheduled tasks and optional components. It prints all selectable IDs with effects. Enter comma-separated IDs to replace the default selection; press Enter for the displayed defaults, or enter `NONE` to cancel. Invalid or conflicting choices abort before cleanup. Unknown third-party services/tasks remain read-only.
 
-新增资源/会话快照、服务/可选组件/所有第三方任务审核及按编号应用。还原点由提示词中的 Win11Debloat 按上游默认行为处理，自定义脚本不重复创建；逐项备份仍保留。默认不修改 SysMain、无线显示器、第三方应用后台权限；WSearch 继续保留。详见中文说明。
+- `G1`–`G3`: custom privacy/AI/widgets and diagnostic services, game capture settings, and the five allowlisted driver checks. Drivers are backed up before any eligible startup change.
+- `G4`: remove ordinary files older than seven days from the active user's Temp and Windows Temp. Skip reparse points, busy/inaccessible files, source and run backups. File deletion is irreversible.
+- `G5`: WinSxS cleanup through `DISM /Online /Cleanup-Image /StartComponentCleanup /NoRestart`. No direct component-store deletion or `/ResetBase`. Exit code 3010 is recorded as restart required; there is no automatic restart or custom undo.
+- `U…`: individually selectable settings from the pinned upstream defaults. Upstream telemetry/widgets are excluded because they change Defender sample submission/force-stop widget processes; `G1` supplies custom settings instead. Upstream app-removal packs are not part of these defaults. A restore point is requested through upstream behavior when any cleanup is selected; creation may be skipped or fail. Consult upstream logs.
+- `S…`, `R…`: optional startup changes, service startup changes, legacy media/XPS/fax removal and task disable/delay. Supported exact Xbox startup entries are default-selected; other candidates need explicit selection. Choose one action per task.
 
-## 验证状态与限制
+Preserves SysMain, WSearch, wireless display, third-party app background permissions, Gaming Services/GameInput, Store, Defender/firewall and Windows Update. Does not kill unrelated applications, trim all working sets, restart Explorer, restart Windows or log off. Changes can still affect fax, printing, Bluetooth, wireless controls, media and Xbox integrations according to selected options.
 
-已在 Windows PowerShell 5.1 通过语法检查、10 项隔离判断测试、备份失败路径测试和 4 项静态安全检查。**没有在开发机器执行精简，未完成端到端系统行为测试。**
+Progress includes stage/item names, elapsed times and live DISM output. Initial/final process count and used physical memory are saved and compared; snapshots are not proof of improved performance. Driver enumeration and DISM can take time.
 
-这是安全优先的尽力处理：不支持或不明确的设置/设备依赖会跳过，不保证所有功能均关闭，不保证遥测归零或提升游戏性能。禁用 RmSvc 可能影响无线开关；Recall 快照无法通过恢复脚本找回；已卸载 Copilot 按需从 Microsoft Store 重装。备份/日志含本机信息，不应提交到仓库。
+Each run creates a secured folder under `%ProgramData%\WindowsCustomCleanup`. It contains the exact custom script, journal, restore wrappers, review inventories, `available-options.json`, `selection.json`, copied upstream source/config, logs, `temp-cleanup.json`, `component-cleanup.json`, health comparisons and `final-cleanup-summary.json` where applicable. Summary counts cover custom report events; upstream per-setting results must be read from its logs. Upstream may also store registry backups under `%LOCALAPPDATA%\Win11Debloat\Backups`.
+
+Use `Restore-CustomChanges.ps1` or `Restore-SelectedDrivers.ps1` from the **exact original run folder** as administrator. These restore only custom journaled changes, preserving intervening conflicts. Upstream changes use upstream backups/undo files or an available Windows restore point. Temporary files, component cleanup, removed Recall snapshots and Copilot app removal have no automatic custom undo; reinstall Copilot through Store. Custom backup state is captured after upstream, so it does not reverse upstream changes to overlapping values.
+
+Legacy modes remain available: `-Mode Disable`, `ScanStartup`, `Review`, `DisableStartup -RunDirectory ... -StartupIds ...`, `ApplyReview -RunDirectory ... -ReviewIds ...`, `Restore`, `RestoreDrivers`. Only default `Unified` performs the combined sequence and offers UAC. Legacy `Disable` applies custom defaults immediately.
+
+Upstream revision/license and update notes: [vendor/UPSTREAM.md](vendor/UPSTREAM.md), [MIT license](vendor/Win11Debloat/LICENSE). Updating the pinned source is a deliberate repository change, not a runtime download.
+
+Non-destructive verification:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Test-WindowsFeatures.ps1
+```
+
+Tests parse the entry and exercise isolated decision/config helpers without running cleanup. Real system cleanup, restoration, UAC and end-to-end servicing require a disposable Windows 11 machine for validation. No guarantee of zero telemetry, reduced memory use or improved game performance.

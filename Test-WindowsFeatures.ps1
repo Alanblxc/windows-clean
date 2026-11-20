@@ -63,8 +63,35 @@ try { Change-Reg 'Fake:\Key' 'Test' 0 } catch { $caught=$true }
 Assert ($caught -and -not $script:writeCalled) 'Backup failure must prevent mutation'
 $source=$ast.Extent.Text
 Assert ($source -notmatch '(?i)Checkpoint-Computer|Enable-ComputerRestore') 'Custom script must leave restore points to upstream'
-Assert ($source -notmatch '(?i)Invoke-WebRequest|codeload\.github|RunDefaults|Start-Process') 'No upstream downloads/execution or UAC launch'
+Assert ($source -notmatch '(?i)Invoke-WebRequest|codeload\.github|RunDefaults') 'Unified mode uses vendored source and explicit config, no runtime downloads/default execution'
+foreach ($name in @('Resolve-CleanupSelection','Invoke-ComponentCleanup','Invoke-TempCleanup','Invoke-UnifiedCleanup')) {
+    $definition=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq $name
+    Assert ($null -ne $definition) "Missing unified function: $name"
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+$options=@([pscustomobject]@{Id='G1';Default=$true},[pscustomobject]@{Id='R1';Default=$false})
+Assert ((@(Resolve-CleanupSelection '' $options) -join ',') -eq 'G1') 'Blank input uses displayed defaults only'
+Assert ((@(Resolve-CleanupSelection 'r1,r1' $options) -join ',') -eq 'R1') 'Explicit selection replaces defaults and deduplicates'
+Assert (@(Resolve-CleanupSelection 'NONE' $options).Count -eq 0) 'NONE cancels all actions'
+foreach ($bad in @('R999','NONE,G1')) {
+    $caught=$false
+    try { Resolve-CleanupSelection $bad $options | Out-Null } catch { $caught=$true }
+    Assert $caught "Invalid selection must abort: $bad"
+}
+$component=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq 'Invoke-ComponentCleanup'
+Assert ($component.Extent.Text -match '/StartComponentCleanup /NoRestart' -and $component.Extent.Text -notmatch '/ResetBase') 'Component cleanup uses servicing API without ResetBase'
+Assert ($component.Extent.Text -match '0,3010') 'DISM success and pending-restart exit codes recognized'
+$unified=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq 'Invoke-UnifiedCleanup'
+Assert ($unified.Extent.Text.IndexOf("Read-Host 'IDs'") -lt $unified.Extent.Text.IndexOf('Copy-Item -LiteralPath $vendor')) 'Selection precedes applying upstream/custom changes'
+Assert ($unified.Extent.Text -match '-SkipExplorerRestart') 'Upstream cannot restart Explorer'
+Assert ($unified.Extent.Text -match "'CreateRestorePoint','DisableTelemetry','DisableWidgets'") 'Conflicting upstream effects are excluded'
+$tempFunction=$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq 'Invoke-TempCleanup'
+Assert ($tempFunction.Extent.Text -match 'ReparsePoint' -and $tempFunction.Extent.Text -match 'AddDays\(-7\)' -and $tempFunction.Extent.Text -notmatch 'Remove-Item[^\r\n]*-Recurse') 'Temporary cleanup skips links and deletes only aged individual files'
+$configValidator=Join-Path $PSScriptRoot 'vendor\Win11Debloat\Scripts\Helpers\Test-ConfigConsistency.ps1'
+. $configValidator
+function Get-Translation { param($Key) return $Key }
+Assert ($null -eq (Test-ConfigConsistency ([pscustomobject]@{Version='1.0';Tweaks=@(@{Name='DisableBing';Value=$true});Deployment=@(@{Name='CreateRestorePoint';Value=$true},@{Name='RestartExplorer';Value=$false})}))) 'Generated config shape accepted by actual upstream validator'
 Assert ($source -notmatch '(?i)Restart-Computer|Stop-Computer|logoff\.exe|shutdown\.exe') 'No automatic restart/logoff'
 Assert ($source -notmatch '(?i)Set-Service\s+[''"]?(WSearch|GamingServices|GamingServicesNet|GameInput)') 'Protected services are not modified'
 Assert ($source -notmatch '(?i)Stop-Process|taskkill') 'No forced process termination'
-Write-Output 'PASS: syntax; decision/resource tests; task/XML cache and streaming dependency tests; backup-failure and static safety checks. No cleanup code executed.'
+Write-Output 'PASS: syntax; decision/resource/selection tests; upstream config validator; task/XML cache and streaming dependencies; backup failure; DISM/temp/upstream safeguards. No cleanup code executed.'

@@ -14,3 +14,6 @@ downloads/
 extended-review.json
 extended-review.md
 health-*.json
+# The vendored archive includes upstream registry payloads and fixtures.
+!vendor/
+!vendor/**

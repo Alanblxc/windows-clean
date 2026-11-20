@@ -1,14 +1,14 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Disable','ScanStartup','DisableStartup','Review','ApplyReview','Restore','RestoreDrivers')]
-    [string]$Mode = 'Disable',
+    [ValidateSet('Unified','Disable','ScanStartup','DisableStartup','Review','ApplyReview','Restore','RestoreDrivers')]
+    [string]$Mode = 'Unified',
     [string]$RunDirectory,
     [int[]]$StartupIds = @(),
     [int[]]$ReviewIds = @()
 )
 
-# Windows PowerShell 5.1 only. No downloads, UAC, restart or Win11Debloat execution.
+# Windows PowerShell 5.1 only. Unified mode selects everything before applying changes.
 $ErrorActionPreference = 'Stop'
 $script:runClock=[Diagnostics.Stopwatch]::StartNew()
 $script:commandEvidenceCache=@{}
@@ -19,6 +19,10 @@ if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.Major 
 }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    if ($Mode -eq 'Unified') {
+        $process=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -Mode Unified') -Wait -PassThru
+        exit $process.ExitCode
+    }
     # Escapes keep this file compatible with Windows PowerShell 5.1 without a UTF-8 BOM.
     throw ([regex]::Unescape('\u8bf7\u4ee5\u7ba1\u7406\u5458\u8eab\u4efd\u542f\u52a8 AI \u6240\u5728\u5e94\u7528\u540e\u91cd\u65b0\u6267\u884c'))
 }
@@ -528,6 +532,7 @@ function Write-HealthSnapshot($Label) {
         if ($Label -eq 'before') { $script:healthBefore=$snapshot }
         elseif ($Label -eq 'after' -and $script:healthBefore) {
             $comparison=Get-HealthComparison $script:healthBefore $snapshot
+            $script:healthComparison=$comparison
             Write-Json $comparison (Join-Path $RunDirectory ("health-comparison-"+$Mode+'-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fff')+'.json'))
             Write-Host 'Resource comparison (before -> after; change = after - before)'
             Write-Host ("Processes: {0} -> {1}; change {2:+0;-0;0}" -f $comparison.BeforeProcessCount,$comparison.AfterProcessCount,$comparison.ProcessCountChange)
@@ -663,8 +668,129 @@ function Restore-Extended($Entry) {
     }
 }
 
+function Resolve-CleanupSelection($Text, $Options) {
+    $ids=if ([string]::IsNullOrWhiteSpace($Text)) { @($Options | Where-Object Default | ForEach-Object Id) } else { @($Text.ToUpperInvariant() -split '[,;\s]+' | Where-Object { $_ }) }
+    if ($ids -contains 'NONE') {
+        if ($ids.Count -ne 1) { throw 'NONE cannot be combined with other choices.' }
+        return
+    }
+    foreach ($id in ($ids | Select-Object -Unique)) {
+        if (@($Options | Where-Object Id -eq $id).Count -ne 1) { throw "Unknown selection: $id" }
+        $id
+    }
+}
+function Invoke-TempCleanup {
+    $result=[pscustomobject]@{ DeletedFiles=0; DeletedBytes=[long]0; Skipped=0; Cutoff=(Get-Date).AddDays(-7); Irreversible=$true }
+    $roots=@((Join-Path $env:SystemRoot 'Temp'))
+    if ($script:target) { $roots+=Join-Path $script:target.Profile 'AppData\Local\Temp' }
+    foreach ($root in ($roots | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        $pending=New-Object 'System.Collections.Generic.Stack[string]'
+        $pending.Push($root)
+        while ($pending.Count) {
+            $directory=$pending.Pop()
+            try {
+                $info=Get-Item -LiteralPath $directory -Force
+                if ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+                foreach ($entry in Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop) {
+                    if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+                    # Preserve the running source, downloads, logs and run backups even under Temp.
+                    if ($entry.FullName -eq $RunDirectory -or $entry.FullName -eq $PSScriptRoot -or $PSScriptRoot.StartsWith($entry.FullName+'\',[StringComparison]::OrdinalIgnoreCase) -or $RunDirectory.StartsWith($entry.FullName+'\',[StringComparison]::OrdinalIgnoreCase)) { continue }
+                    if ($entry.PSIsContainer) { $pending.Push($entry.FullName); continue }
+                    if ($entry.LastWriteTime -ge $result.Cutoff) { continue }
+                    try {
+                        $size=$entry.Length
+                        Remove-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
+                        $result.DeletedFiles++; $result.DeletedBytes+=$size
+                    } catch { $result.Skipped++ }
+                }
+            } catch { $result.Skipped++ }
+        }
+    }
+    Write-Json $result (Join-Path $RunDirectory 'temp-cleanup.json')
+    Log 'VERIFIED' 'Temporary files' "Deleted=$($result.DeletedFiles); bytes=$($result.DeletedBytes); skipped=$($result.Skipped)"
+    $script:tempCleanupResult=$result
+}
+function Invoke-ComponentCleanup {
+    $logPath=Join-Path $RunDirectory 'component-cleanup-dism.log'
+    & "$env:SystemRoot\System32\dism.exe" /Online /Cleanup-Image /StartComponentCleanup /NoRestart "/LogPath:$logPath"
+    $code=$LASTEXITCODE
+    $script:componentCleanupResult=[pscustomobject]@{ ExitCode=$code; RestartRequired=($code -eq 3010); ResetBase=$false; Log=$logPath }
+    Write-Json $script:componentCleanupResult (Join-Path $RunDirectory 'component-cleanup.json')
+    if ($code -notin @(0,3010)) { throw "DISM component cleanup failed: $code. See $logPath" }
+    Log 'VERIFIED' 'WinSxS' "DISM exit=$code; restart required=$($code -eq 3010). Component cleanup has no custom undo."
+}
+function Invoke-UnifiedCleanup {
+    if ($management -ne 'Personal') { throw 'Managed/enrolled or unknown management state: no unified changes permitted.' }
+    $vendor=Join-Path $PSScriptRoot 'vendor\Win11Debloat'
+    if (-not (Test-Path (Join-Path $vendor 'Win11Debloat.ps1'))) { throw 'Download/extract the complete windows-clean repository, including vendor.' }
+    $rows=@(Get-StartupInventory)
+    Write-StartupReview $rows
+    Write-ExtendedReview
+    if (@($script:report | Where-Object Status -eq 'FAILED').Count) { throw 'Inventory failed; no changes applied.' }
+    $options=@(
+        [pscustomobject]@{Id='G1';Default=$true;Label='Custom privacy/Copilot/Recall/widgets and RmSvc/diagnostic services; removal of Recall snapshots cannot be undone'},
+        [pscustomobject]@{Id='G2';Default=$true;Label='Disable game capture and Game Bar controller launch; keep gaming services'},
+        [pscustomobject]@{Id='G3';Default=$true;Label='Check five allowlisted drivers; disable only eligible drivers'},
+        [pscustomobject]@{Id='G4';Default=$true;Label='Delete ordinary temporary files older than 7 days (irreversible)'},
+        [pscustomobject]@{Id='G5';Default=$true;Label='WinSxS: DISM StartComponentCleanup, no ResetBase (no custom undo)'}
+    )
+    $defaults=Get-Content (Join-Path $vendor 'Config\DefaultSettings.json') -Raw | ConvertFrom-Json
+    $labels=(Get-Content (Join-Path $vendor 'Config\Languages\zh-CN\Features.json') -Raw -Encoding UTF8 | ConvertFrom-Json).Features
+    # Upstream telemetry edits Defender; widgets force-kills processes. Use custom settings instead.
+    $upstream=@($defaults.Settings | Where-Object { $_.Name -notin @('CreateRestorePoint','DisableTelemetry','DisableWidgets') })
+    $n=0
+    foreach ($setting in $upstream) {
+        $n++
+        $options+=[pscustomobject]@{Id="U$n";Default=$true;Label="Win11Debloat: $($setting.Name) - $($labels.($setting.Name).Label)"}
+    }
+    foreach ($row in $rows | Where-Object { $_.Supported -and $_.Enabled -eq 'Enabled' -and $_.Recommend }) {
+        $options+=[pscustomobject]@{Id="S$($row.Id)";Default=$false;Label="Startup: $($row.Name); $($row.Impact)"}
+    }
+    foreach ($row in $rows | Where-Object { $_.Supported -and $_.Enabled -eq 'Enabled' -and -not $_.Recommend -and $_.Command -match '(?i)Microsoft\.GamingApp_8wekyb3d8bbwe!Microsoft\.Xbox\.App(?:\s|"|$)' }) {
+        $options+=[pscustomobject]@{Id="S$($row.Id)";Default=$true;Label="Xbox automatic launch: $($row.Name); keep installed, open manually"}
+    }
+    foreach ($item in $script:review | Where-Object Supported) {
+        $options+=[pscustomobject]@{Id="R$($item.Id)";Default=$false;Label="$($item.Kind): $($item.Name); $($item.Action); $($item.Impact)"}
+    }
+    Write-Host "`nSelect BEFORE applying. Enter comma-separated IDs; Enter=G/U defaults; NONE=cancel. S/R are opt-in." -ForegroundColor Yellow
+    Write-Host 'Upstream restore point follows its own behavior; not guaranteed. Upstream backups and custom restore are separate.'
+    Write-Host 'Upstream telemetry/widgets excluded to preserve Defender and avoid forced process termination; G1 covers custom settings.'
+    foreach ($option in $options) { Write-Host ("{0} {1}: {2}" -f $(if ($option.Default) {'[*]'} else {'[ ]'}),$option.Id,$option.Label) }
+    Write-Json $options (Join-Path $RunDirectory 'available-options.json')
+    $selected=@(Resolve-CleanupSelection (Read-Host 'IDs') $options)
+    $selectedReview=@($script:review | Where-Object { "R$($_.Id)" -in $selected })
+    if (@($selectedReview | Group-Object Name | Where-Object Count -gt 1).Count) { throw 'Choose disable OR delay for each task, not both.' }
+    $taskNames=@($selectedReview | Where-Object { $_.Kind -in @('Task','Delay') } | ForEach-Object Name)
+    foreach ($row in $rows | Where-Object { "S$($_.Id)" -in $selected }) {
+        if ($row.Kind -eq 'Task' -and ($row.Original.TaskPath+$row.Original.TaskName) -in $taskNames) { throw 'Same task selected in startup and extended review; select it once.' }
+    }
+    Write-Json ([pscustomobject]@{Selected=$selected;Time=(Get-Date).ToString('o')}) (Join-Path $RunDirectory 'selection.json')
+    $script:selectedCleanupIds=$selected
+    if (-not $selected.Count) { Log 'NOTE' 'Selection' 'Cancelled; no cleanup performed.'; return }
+    # Isolate upstream script scope and retain the exact source used for this run.
+    if (-not $script:target -or $identity.User.Value -ne $script:target.Sid) { throw 'Unified upstream execution requires the active user and administrator to be the same account.' }
+    Copy-Item -LiteralPath $vendor -Destination (Join-Path $RunDirectory 'Win11Debloat') -Recurse
+    $tweaks=@(); $n=0
+    foreach ($setting in $upstream) { $n++; if ("U$n" -in $selected) { $tweaks+=@{Name=$setting.Name;Value=$true} } }
+    $configPath=Join-Path $RunDirectory 'upstream-config.json'
+    Write-Json @{Version='1.0';Tweaks=$tweaks;Deployment=@(@{Name='CreateRestorePoint';Value=$true},@{Name='RestartExplorer';Value=$false})} $configPath
+    $upstreamLogs=Join-Path $RunDirectory 'upstream-logs'
+    Try-Operation 'Win11Debloat selected settings and restore point' {
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RunDirectory 'Win11Debloat\Win11Debloat.ps1') -Config $configPath -Silent -SkipExplorerRestart -LogPath $upstreamLogs
+        if ($LASTEXITCODE -ne 0) { throw "Win11Debloat exit=$LASTEXITCODE; inspect upstream logs." }
+        Log 'NOTE' 'Win11Debloat' 'Process completed; consult upstream logs for individual failures and actual restore point status.'
+    }
+    if ('G1' -in $selected) { Try-Operation 'Custom privacy settings' { Invoke-BaseSettings } }
+    if ('G2' -in $selected) { Try-Operation 'Game settings' { Invoke-GameSettings } }
+    if ('G3' -in $selected) { Try-Operation 'Selected drivers' { Invoke-SelectedDrivers } }
+    foreach ($row in $rows | Where-Object { "S$($_.Id)" -in $selected }) { Try-Operation "Startup #$($row.Id)" { Disable-StartupRow $row } }
+    foreach ($item in $selectedReview) { Try-Operation "Review #$($item.Id)" { Apply-ExtendedItem $item } }
+    if ('G4' -in $selected) { Try-Operation 'Temporary file cleanup' { Invoke-TempCleanup } }
+    if ('G5' -in $selected) { Try-Operation 'WinSxS component cleanup (may take time)' { Invoke-ComponentCleanup } }
+}
 # Main: fresh independent run directories; follow-up modes require the exact original directory.
-$newRun=$Mode -in @('Disable','ScanStartup','Review')
+$newRun=$Mode -in @('Unified','Disable','ScanStartup','Review')
 if ($newRun) {
     if ($RunDirectory) { throw 'Disable/ScanStartup creates a new run. Do not supply RunDirectory.' }
     $RunDirectory=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ("WindowsCustomCleanup\"+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
@@ -707,6 +833,7 @@ try {
         throw 'Managed/enrolled or unknown management state: no writes permitted.'
     }
     switch ($Mode) {
+        'Unified' { Invoke-UnifiedCleanup }
         'Disable' {
             if ($management -eq 'Personal') {
                 Invoke-BaseSettings
@@ -759,6 +886,9 @@ try {
 } catch { Log 'FAILED' $Mode $_.Exception.Message }
 finally {
     Write-HealthSnapshot 'after'
+    if ($Mode -eq 'Unified') {
+        Write-Json ([pscustomobject]@{ Directory=$RunDirectory; Selected=$script:selectedCleanupIds; Completed=@($script:report | Where-Object Status -eq 'VERIFIED').Count; Failed=@($script:report | Where-Object Status -eq 'FAILED').Count; Skipped=@($script:report | Where-Object Status -eq 'SKIP').Count; Resources=$script:healthComparison; TemporaryFiles=$script:tempCleanupResult; ComponentCleanup=$script:componentCleanupResult; Note='Counts are custom report events; upstream outcomes and restore point status are in upstream logs.' }) (Join-Path $RunDirectory 'final-cleanup-summary.json')
+    }
     Try-Operation 'Protected services check' {
         $after=Get-ProtectedServices
         Write-Json $after (Join-Path $RunDirectory "$Mode-protected-after.json")

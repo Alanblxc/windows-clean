@@ -1,87 +1,37 @@
-# Windows 11 自定义精简脚本
+# Windows 11 一次精简
 
-## 扩展审核（新增）
-
-每次模式运行结束时，控制台输出运行前后进程总数、系统已用物理内存（MB）和变化量，并在本轮目录保存 `health-comparison-模式-时间.json`。变化量为“之后减之前”，负数表示减少；内存按系统可见总物理内存减可用内存计算，不累加进程工作集。前置采样失败时跳过对比，不编造数据。即时数据可能受其他后台活动影响，不能代替重启后的同负载验证；若从提示词执行 Win11Debloat，则这里的“前”是自定义脚本运行前，不包含上游执行前的资源。
-
-现在只需下载 `Disable-WindowsFeatures.ps1`，扩展功能已合并，旧的 `ExtendedReview.ps1` 不再需要。执行时输出当前项目、开始/结束、耗时，以及驱动扫描和应用/任务扫描进度；计划任务清单、XML 和重复签名查询在本轮复用，驱动依赖流式读取。DISM 等系统调用仍可能耗时，开始信息不代表该阶段已成功完成。默认保存资源和登录会话前后快照，以及 `extended-review.md/json`。还原点由提示词中的 Win11Debloat 上游默认流程处理；自定义脚本不重复创建，逐项备份和恢复仍保留。历史备份目录内的旧版双文件恢复脚本仍使用自己的副本，不要替换或删除那些副本。
-
-扩展清单包含 Fax、Xbox 配套服务、打印和蓝牙服务的按需启动调整；旧媒体播放器、XPS、传真可选功能；所有触发类型的第三方计划任务和第三方自动服务。未知服务/任务只读，不凭名称陌生禁用。可选择项目需要阅读影响后指定编号：
+完整内置固定版本 Win11Debloat，把自定义精简、自启动/服务/组件选择、临时文件、WinSxS 清理及资源对比放进同一入口。**先扫描并选择，再连续执行**。下载解压整个仓库，包括 `vendor`，不能再只下载主脚本。
 
 ```powershell
-& ".\Disable-WindowsFeatures.ps1" -Mode ApplyReview -RunDirectory "C:\ProgramData\WindowsCustomCleanup\实际运行目录" -ReviewIds 2,5
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Disable-WindowsFeatures.ps1
 ```
 
-编号仅是示例。延迟启动仅支持已存在且符合条件的交互式登录任务，延迟 60 秒，不自动把 Run 项迁移为任务。相同任务的禁用和延迟不可同时选择。可选功能恢复可能需要联网或安装源；不自动重启。
+使用 64 位 Windows PowerShell 5.1；默认入口未提权时弹标准 UAC。融合模式要求管理员与当前桌面登录用户是同一账户，组织管理/注册状态不明时停止。
 
-每季度或软件更新后可手动运行 `-Mode Review`，只读创建新一轮清单和资源快照。不会安装定期自动精简任务。会话只列出，不注销；CPU 单进程字段是累计时间，不是瞬时百分比。需人工在相近负载、重启后空闲 3～5 分钟对比，不用进程总数判断是否一定更快。
+扫描完成后，控制台显示所有编号、作用和影响。输入逗号分隔编号，**替换**默认选择；直接回车采用显示为 `[*]` 的默认项；`NONE` 取消。自启动、服务、组件等额外候选默认保留，识别到的精确 Xbox 自动启动项默认选中。同一任务不能同时选禁用和延迟，也不能在两类清单重复选择。
 
-**明确排除 SysMain、WSearch、无线显示器和第三方应用逐个后台权限修改。** 不调整 Windows 系统维护任务。扩展修改同样由本轮 `Restore-CustomChanges.ps1` 恢复。
+- `G1`：自定义隐私、Copilot/Recall、小组件与 RmSvc/诊断服务；Recall 快照删除不可恢复。
+- `G2`：关闭游戏录制与手柄启动 Game Bar，保留游戏服务。
+- `G3`：检查 `1394ohci、beep、HidIr、circlass、usbcir`，仅调整符合条件的驱动启动值，先备份，不卸载驱动。
+- `G4`：删除实际用户 Temp 和 Windows Temp 超过七天的普通文件，跳过重解析点、占用文件、脚本目录及本轮日志/备份；删除不可恢复。
+- `G5`：WinSxS 通过 `DISM /Online /Cleanup-Image /StartComponentCleanup /NoRestart` 清理。不直接删目录，不用 `/ResetBase`。3010 记录为待手动重启；清理没有自定义撤销功能。
+- `U…`：逐项选择固定版本上游默认设置。排除会改 Defender 样本提交策略的上游遥测项，以及会强制结束小组件进程的上游小组件项；这两项由 `G1` 的自定义设置处理。目前上游默认配置不包含批量卸载应用包。只要选择执行清理，就先按上游逻辑请求还原点，可能因近期已有还原点而跳过，也可能失败，应查看实际日志。
+- `S… / R…`：自启动、服务启动方式、旧播放器/XPS/传真、第三方任务禁用或延迟 60 秒。未知依赖的服务/任务只读保留。
 
-仅生成脚本，不会因为下载或阅读而运行。**不包含 Win11Debloat，也不下载或运行任何上游精简工具。**
+继续保留 SysMain、WSearch、无线显示器、第三方应用后台权限、Gaming Services/GameInput、Store、Defender、防火墙与 Windows Update。不上来结束应用，不强制清空系统内存，不重启资源管理器，不自动重启或注销。按所选项目，打印/蓝牙/传真/无线开关/媒体/Xbox 功能可能受影响。
 
-## 运行
+控制台实时显示阶段、项目、耗时及 DISM 进度。开始与结束记录进程数量、系统已用物理内存和差值；即时资源变化不证明性能提升。驱动扫描和 DISM 仍可能较慢。
 
-将 `Disable-WindowsFeatures.ps1` 放在固定位置。在该文件夹用管理员身份打开 **64 位 Windows PowerShell 5.1**（不是 PowerShell 7 / pwsh）：
+每轮备份位于 `%ProgramData%\WindowsCustomCleanup\<本轮>`，保存原值、自定义恢复脚本、选项与实际选择、上游源码副本及配置、日志、临时文件删除数量/字节、WinSxS 退出码、健康快照/对比及 `final-cleanup-summary.json`。汇总计数为自定义报告事件，上游逐项成败另看上游日志。上游注册表备份还可能在 `%LOCALAPPDATA%\Win11Debloat\Backups`。
+
+以管理员身份运行本轮 `Restore-CustomChanges.ps1` 或 `Restore-SelectedDrivers.ps1`，仅恢复自定义日志中的改动。上游改动使用其备份/撤销文件或有效系统还原点恢复；自定义备份在上游执行后记录，不能撤销上游重叠设置。临时文件、WinSxS 清理和 Recall 快照不能靠自定义恢复找回；Copilot 按需从 Store 重装。
+
+旧 `Disable/ScanStartup/Review/DisableStartup/ApplyReview/Restore/RestoreDrivers` 模式保留，只有默认 `Unified` 提供完整融合流程与 UAC；旧 `Disable` 会直接应用自定义默认设置。
+
+上游固定版本和 MIT 许可证说明：[vendor/UPSTREAM.md](vendor/UPSTREAM.md)。供 AI 执行的简短指令：[PROMPT-zh.md](PROMPT-zh.md)。开发测试：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Disable-WindowsFeatures.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Test-WindowsFeatures.ps1
 ```
 
-不自动弹 UAC、重启或注销。权限不足直接停止。每次运行在 `%ProgramData%\WindowsCustomCleanup\日期时间-随机标识` 新建独立持久目录，控制台打印绝对路径。目录只授权管理员和 SYSTEM。备份含程序路径等隐私信息，分享前检查。
-
-默认执行：
-- 保留原先的 RmSvc、诊断服务、遥测策略、Copilot / Recall / 小组件处理；Copilot 仅在提权账户与目标登录用户相同的情况下卸载。
-- 修改 Game Bar 用户录制偏好及控制器唤起开关；已有的历史录制 DWORD 才修改，不凭空创建版本不确定的键。
-- 检查五个指定驱动；除 beep 外，驱动停止、设备与过滤器/服务依赖清单完整且无相关依赖时才禁用。
-- 扫描自启动。明确识别为 Xbox 主应用包启动命令、并能备份恢复的入口直接处理；其他入口先列清单，不自动禁用。
-
-**系统管理状态不明或检测到域/工作学校注册时，所有修改都跳过，仅生成扫描报告。** 无法唯一识别当前会话登录用户时跳过用户范围修改，绝不误改提权管理员的 HKCU。
-
-## 自启动：先扫描，后明确选择
-
-默认运行已包含扫描。也可以只扫描，不执行精简：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Disable-WindowsFeatures.ps1" -Mode ScanStartup
-```
-
-打开输出目录的 `startup-review.md` 查看编号、发布者/签名、准确位置、完整命令、启用状态、用途、影响、未知信息及拟用方法。建议采用保守白名单，未知项目和硬件、安全、同步等项目默认保留；签名不是必需性的证明。应用包 StartupTask 读取清单和状态，但不猜测修改其内部状态。
-
-选择要禁用的编号后，在同一管理员 Windows PowerShell 窗口直接调用脚本（这样数组参数可正确传递）：
-
-```powershell
-& ".\Disable-WindowsFeatures.ps1" -Mode DisableStartup -RunDirectory "C:\ProgramData\WindowsCustomCleanup\实际运行目录" -StartupIds 3,7
-```
-
-编号是示例，必须替换成你看过且明确同意的实际编号。全部保留则不执行这个命令。不会把沉默、超时或缺省参数当作同意。选中条目会再次检查原命令/文件哈希/任务定义，发生变化则跳过。计划任务只禁用不删除；注册表入口先备份再移除；启动文件先复制校验再移出，不删除程序本体，不结束进程。
-
-## 备份、日志和恢复
-
-输出目录包括：
-- `original-values.json`：本轮注册表存在性、类型、原值、服务原配置及逐项变更日志。
-- `report.json` 和各模式 `.log`：完成、原已符合、跳过、失败、待选择信息。
-- `device-inventory.json`、各驱动 `*-original.reg`：设备/依赖证据与驱动键导出。
-- `startup-review.json` / `.md`：自启动清单。
-- `*-protected-before.json` / `*-protected-after.json`：WSearch / Gaming Services 配置与状态对照。
-- `Restore-CustomChanges.ps1`：恢复本轮自定义修改。
-- `Restore-SelectedDrivers.ps1`：只恢复本轮驱动修改。
-
-恢复命令（替换成真实绝对路径）：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\WindowsCustomCleanup\实际运行目录\Restore-CustomChanges.ps1"
-```
-
-只恢复驱动则改用 `Restore-SelectedDrivers.ps1`。使用本轮真实原值；原来不存在的注册表值恢复时删除。待完成写入也记入日志，防止操作中断后失去备份。注册表/任务若已被外部修改则保留并报告，不擅自覆盖。恢复不会重新下载应用；Copilot 按需从 Microsoft Store 重装；Recall 已删除的快照无法恢复。新格式恢复入口不读取旧版 `WindowsFeatures-backup.json`。
-
-## 明确限制
-
-- 这是安全优先的尽力处理，不承诺所有项目都能自动关闭。Xbox 应用私有设置、应用包启动任务禁用、Game Bar 独立后台权限和总开关无法可靠配置时报告跳过，不用全局后台策略替代。
-- 微软文档注明 AllowGameDVR CSP 仅在 Windows 10 桌面版强制执行，本脚本不声称该策略能在 Win11 生效。用户录制设置回读成功不等于实测录制功能；不会自动开游戏测试。
-- 不修改游戏模式、GameInput、WSearch、GamingServices、GamingServicesNet、Store、Edge、显卡录制或安全软件。保护服务前后自然变化仅报告，不反向强制修改。
-- 不禁用 bowser，不卸载 Xbox / Game Bar，不修改驱动文件、权限或其他驱动数值。beep 可能仍处于加载状态；配置禁用不等于立即卸载，需要手动重启验证。
-- 遥测不保证归零，策略受系统版本/版本 SKU 支持程度限制。禁用 RmSvc 可能影响飞行模式、Wi-Fi / 蓝牙开关。
-- 不保证提升 FPS 或降低延迟。每次默认执行都会新建一轮备份，不要重复运行整套精简来代替按编号处理自启动。
-
-验证：`Test-WindowsFeatures.ps1` 只解析脚本并隔离测试纯判断/备份失败路径，不执行系统修改。完整运行效果仍需在目标机器上运行后查看日志，并在必要时手动重启验证。
+测试只解析脚本并隔离验证判断/配置，不执行精简。没有在开发机器进行实际精简、UAC、恢复或端到端组件清理验证。不承诺遥测归零、内存下降或游戏性能提升。

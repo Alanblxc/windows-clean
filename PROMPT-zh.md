@@ -1,30 +1,7 @@
-# Windows 11 精简提示词
+# Windows 11 一次精简提示词
 
-请直接执行，不逐项确认；仅额外候选项等我选择。
+请下载并完整解压 https://codeload.github.com/Alanblxc/windows-clean/zip/refs/heads/main 到持久目录，使用 64 位 Windows PowerShell 5.1 执行 `Disable-WindowsFeatures.ps1`。不要只下载单文件，不另行下载或单独执行 Win11Debloat，不额外审查源码、核对哈希或逐项检查约定。
 
-1. **先提权再开始**：未获管理员权限就通过标准 UAC 启动 64 位 Windows PowerShell 5.1；取消则停止。全程使用 powershell.exe，不用 pwsh.exe。
+入口会先通过标准 UAC 提权，再扫描并展示上游、自定义、自启动、服务、组件及清理选项。把编号、作用和影响展示给我，精简前等我一次选择，再将所选编号传入入口菜单并让整套流程执行完。默认推荐项不是自动同意；输入具体编号会替换默认选择，NONE 取消。保留实时进度、备份及脚本内保护检查。
 
-2. 下载并完整解压 https://codeload.github.com/Raphire/Win11Debloat/zip/refs/heads/master ，直接执行 `Win11Debloat.ps1 -RunDefaults -Silent -LogPath "<日志目录>"`。还原点按上游默认行为处理。不进行源码审查、默认配置与约定的逐项比对，不修改默认参数或列表。自定义操作仍不改 SysMain、WSearch，不卸载无线显示器，不处理第三方应用后台权限，保留 Store、Defender、防火墙和 Windows Update。上游默认行为以下载版本为准，这种直接执行方式不保证上游也符合上述自定义排除项。
-
-3. 从以下地址下载单文件脚本至持久目录，保存后直接运行一次，不额外审查源码、核对哈希或检查脚本与约定是否一致。保留控制台实时输出，展示当前阶段、项目和耗时，不等结束才报告过程：
-
-```text
-https://raw.githubusercontent.com/Alanblxc/windows-clean/main/Disable-WindowsFeatures.ps1
-```
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<下载目录>\Disable-WindowsFeatures.ps1"
-```
-
-保留脚本备份和保护检查，不绕过跳过项；正确使用实际登录用户，不误改提权管理员的用户设置。
-
-4. 读取本轮 `startup-review.md`、`extended-review.md`，列出可操作项的编号、名称、影响，等我明确选择；无候选项则略过。选中后仅运行对应模式，不重复整套精简：
-
-```powershell
-& "<下载目录>\Disable-WindowsFeatures.ps1" -Mode DisableStartup -RunDirectory "<本轮目录>" -StartupIds <实际所选编号>
-& "<下载目录>\Disable-WindowsFeatures.ps1" -Mode ApplyReview -RunDirectory "<本轮目录>" -ReviewIds <实际所选编号>
-```
-
-5. 收尾删除实际用户临时目录及 Windows Temp 中超过 7 天的普通文件，再移除空普通子目录；不跟随重解析点，跳过占用文件及本轮下载/日志/备份，用户目录不明则跳过。**删除不可恢复**；不清浏览器数据、下载文件夹、Prefetch、WinSxS 或更新缓存。释放执行器自身临时对象，系统内存由 Windows 回收，不结束应用、不批量压缩工作集或清空待机内存。
-
-6. 等待执行结束并读实际日志；超时先检查原进程，避免重复运行。不自动重启或注销。收尾后与本轮最初 `health-before-*.json` 对比进程数、系统已用物理内存（总量减可用）及差值，缺基线则只报当前值；保存 `final-cleanup-summary.json`。最后简报完成/跳过/失败/待选择项、临时文件删除数量与大小、前后资源对比及日志/备份/恢复脚本绝对路径。即时变化不等于重启后效果，不承诺内存必降或性能提升。
+WinSxS 使用入口提供的 DISM StartComponentCleanup，不直接删除目录、不加 ResetBase。临时文件清理不可恢复。上游还原点按上游逻辑处理；不自动重启或注销，不结束应用或强制清系统内存。结束后读实际日志，简报所选项目、完成/跳过/失败、清理数量及字节、前后进程数和内存对比，以及日志/备份/恢复脚本路径；超时先查原进程，避免重复执行。
