@@ -724,16 +724,16 @@ function Invoke-UnifiedCleanup {
     if ($management -ne 'Personal') { throw 'Managed/enrolled or unknown management state: no unified changes permitted.' }
     $vendor=Join-Path $PSScriptRoot 'vendor\Win11Debloat'
     if (-not (Test-Path (Join-Path $vendor 'Win11Debloat.ps1'))) { throw 'Download/extract the complete windows-clean repository, including vendor.' }
-    $rows=@(Get-StartupInventory)
-    Write-StartupReview $rows
-    Write-ExtendedReview
-    if (@($script:report | Where-Object Status -eq 'FAILED').Count) { throw 'Inventory failed; no changes applied.' }
+    $rows=@()
+    $script:review=@()
     $options=@(
         [pscustomobject]@{Id='G1';Default=$true;Label='Custom privacy/Copilot/Recall/widgets and RmSvc/diagnostic services; removal of Recall snapshots cannot be undone'},
         [pscustomobject]@{Id='G2';Default=$true;Label='Disable game capture and Game Bar controller launch; keep gaming services'},
         [pscustomobject]@{Id='G3';Default=$true;Label='Check five allowlisted drivers; disable only eligible drivers'},
         [pscustomobject]@{Id='G4';Default=$true;Label='Delete ordinary temporary files older than 7 days (irreversible)'},
-        [pscustomobject]@{Id='G5';Default=$true;Label='WinSxS: DISM StartComponentCleanup, no ResetBase (no custom undo)'}
+        [pscustomobject]@{Id='G5';Default=$true;Label='WinSxS: DISM StartComponentCleanup, no ResetBase (no custom undo)'},
+        [pscustomobject]@{Id='X1';Default=$false;Label='Scan startup candidates (including Xbox); choose individual items after scanning'},
+        [pscustomobject]@{Id='X2';Default=$false;Label='Scan service/task/optional-component candidates (DISM may take time); choose items after scanning'}
     )
     $defaults=Get-Content (Join-Path $vendor 'Config\DefaultSettings.json') -Raw | ConvertFrom-Json
     $labels=(Get-Content (Join-Path $vendor 'Config\Languages\zh-CN\Features.json') -Raw -Encoding UTF8 | ConvertFrom-Json).Features
@@ -744,21 +744,32 @@ function Invoke-UnifiedCleanup {
         $n++
         $options+=[pscustomobject]@{Id="U$n";Default=$true;Label="Win11Debloat: $($setting.Name) - $($labels.($setting.Name).Label)"}
     }
-    foreach ($row in $rows | Where-Object { $_.Supported -and $_.Enabled -eq 'Enabled' -and $_.Recommend }) {
-        $options+=[pscustomobject]@{Id="S$($row.Id)";Default=$false;Label="Startup: $($row.Name); $($row.Impact)"}
-    }
-    foreach ($row in $rows | Where-Object { $_.Supported -and $_.Enabled -eq 'Enabled' -and -not $_.Recommend -and $_.Command -match '(?i)Microsoft\.GamingApp_8wekyb3d8bbwe!Microsoft\.Xbox\.App(?:\s|"|$)' }) {
-        $options+=[pscustomobject]@{Id="S$($row.Id)";Default=$true;Label="Xbox automatic launch: $($row.Name); keep installed, open manually"}
-    }
-    foreach ($item in $script:review | Where-Object Supported) {
-        $options+=[pscustomobject]@{Id="R$($item.Id)";Default=$false;Label="$($item.Kind): $($item.Name); $($item.Action); $($item.Impact)"}
-    }
-    Write-Host "`nSelect BEFORE applying. Enter comma-separated IDs; Enter=G/U defaults; NONE=cancel. S/R are opt-in." -ForegroundColor Yellow
+    Write-Host "`nSelect BEFORE scanning/applying. Enter comma-separated IDs; Enter=G/U defaults; NONE=cancel. X1/X2 scans are opt-in." -ForegroundColor Yellow
     Write-Host 'Upstream restore point follows its own behavior; not guaranteed. Upstream backups and custom restore are separate.'
     Write-Host 'Upstream telemetry/widgets excluded to preserve Defender and avoid forced process termination; G1 covers custom settings.'
     foreach ($option in $options) { Write-Host ("{0} {1}: {2}" -f $(if ($option.Default) {'[*]'} else {'[ ]'}),$option.Id,$option.Label) }
     Write-Json $options (Join-Path $RunDirectory 'available-options.json')
     $selected=@(Resolve-CleanupSelection (Read-Host 'IDs') $options)
+    if ('X1' -in $selected) {
+        $rows=@(Get-StartupInventory)
+        Write-StartupReview $rows
+    }
+    if ('X2' -in $selected) { Write-ExtendedReview }
+    if (@($script:report | Where-Object Status -eq 'FAILED').Count) { throw 'Inventory failed; no changes applied.' }
+    $candidates=@()
+    foreach ($row in $rows | Where-Object { $_.Supported -and $_.Enabled -eq 'Enabled' -and ($_.Recommend -or $_.Command -match '(?i)Microsoft\.GamingApp_8wekyb3d8bbwe!Microsoft\.Xbox\.App(?:\s|"|$)') }) {
+        $candidates+=[pscustomobject]@{Id="S$($row.Id)";Default=$false;Label="Startup: $($row.Name); $($row.Impact)"}
+    }
+    foreach ($item in $script:review | Where-Object Supported) {
+        $candidates+=[pscustomobject]@{Id="R$($item.Id)";Default=$false;Label="$($item.Kind): $($item.Name); $($item.Action); $($item.Impact)"}
+    }
+    if ($candidates.Count) {
+        Write-Host 'Optional candidates: enter IDs; Enter or NONE keeps all. No changes applied yet.'
+        foreach ($candidate in $candidates) { Write-Host "$($candidate.Id): $($candidate.Label)" }
+        Write-Json @($options+$candidates) (Join-Path $RunDirectory 'available-options.json')
+        $selected+=@(Resolve-CleanupSelection (Read-Host 'Candidate IDs') $candidates)
+    }
+    $selected=@($selected | Where-Object { $_ -notin @('X1','X2') })
     $selectedReview=@($script:review | Where-Object { "R$($_.Id)" -in $selected })
     if (@($selectedReview | Group-Object Name | Where-Object Count -gt 1).Count) { throw 'Choose disable OR delay for each task, not both.' }
     $taskNames=@($selectedReview | Where-Object { $_.Kind -in @('Task','Delay') } | ForEach-Object Name)
