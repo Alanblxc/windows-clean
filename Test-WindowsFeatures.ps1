@@ -1,0 +1,42 @@
+# Parse and import only named pure functions; never execute the cleanup script.
+$ErrorActionPreference = 'Stop'
+$path = Join-Path $PSScriptRoot 'Disable-WindowsFeatures.ps1'
+$tokens = $null; $errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw ($errors.Message -join "`n") }
+function Assert($Condition, $Message) { if (-not $Condition) { throw $Message } }
+foreach ($name in @('Get-DriverDecision', 'Get-StartupAdvice')) {
+    $definition = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+        Where-Object Name -eq $name | Select-Object -First 1
+    Assert ($null -ne $definition) "Missing function: $name"
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+Assert ((Get-DriverDecision 'beep' $true 'Running' @() $false) -eq 'Eligible') 'beep may be configured without unloading'
+Assert ((Get-DriverDecision 'bowser' $true 'Stopped' @() $true) -eq 'NotAllowlisted') 'Closed allowlist'
+Assert ((Get-DriverDecision 'HidIr' $true 'Running' @() $true) -eq 'Running') 'Preserve running driver'
+Assert ((Get-DriverDecision 'usbcir' $true 'Stopped' @('Disconnected receiver') $true) -eq 'DeviceDependency') 'Disconnected device blocks change'
+Assert ((Get-DriverDecision '1394ohci' $true 'Stopped' @() $false) -eq 'UncertainInventory') 'Incomplete inventory fails closed'
+Assert ((Get-DriverDecision 'circlass' $false 'Unknown' @() $true) -eq 'NotInstalled') 'Never create missing driver'
+Assert ((Get-DriverDecision '1394ohci' $true 'Stopped' @() $true) -eq 'Eligible') 'Complete clean inventory'
+Assert ((Get-StartupAdvice 'Windows Defender' 'C:\Windows\system.exe').Recommend -eq $false) 'Preserve security'
+Assert ((Get-StartupAdvice 'Unknown helper' 'C:\Apps\unknown.exe').Recommend -eq $false) 'Unknown is not unnecessary'
+Assert ((Get-StartupAdvice 'Steam' 'C:\Games\Steam\steam.exe -silent').Recommend -eq $true) 'Review optional launcher'
+# Backup failure must abort before the registry writer is invoked.
+$definition = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+    Where-Object Name -eq 'Change-Reg' | Select-Object -First 1
+Assert ($null -ne $definition) 'Missing backed-up registry change function'
+. ([scriptblock]::Create($definition.Extent.Text))
+function Get-RegOriginal { [pscustomobject]@{ Exists=$false; Kind='DWord'; Value=$null } }
+function Save-Journal { throw 'simulated backup failure' }
+function Write-RegValue { $script:writeCalled=$true }
+$script:writeCalled=$false
+$script:journal=[pscustomobject]@{ Changes=@() }
+$caught=$false
+try { Change-Reg 'Fake:\Key' 'Test' 0 } catch { $caught=$true }
+Assert ($caught -and -not $script:writeCalled) 'Backup failure must prevent mutation'
+$source=$ast.Extent.Text
+Assert ($source -notmatch '(?i)Invoke-WebRequest|codeload\.github|RunDefaults|Start-Process') 'No upstream downloads/execution or UAC launch'
+Assert ($source -notmatch '(?i)Restart-Computer|Stop-Computer|logoff\.exe|shutdown\.exe') 'No automatic restart/logoff'
+Assert ($source -notmatch '(?i)Set-Service\s+[''"]?(WSearch|GamingServices|GamingServicesNet|GameInput)') 'Protected services are not modified'
+Assert ($source -notmatch '(?i)Stop-Process|taskkill') 'No forced process termination'
+Write-Output 'PASS: Windows PowerShell syntax, 10 decision tests, backup-failure test and 4 static safety checks. No cleanup code executed.'

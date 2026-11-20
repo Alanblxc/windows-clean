@@ -1,0 +1,13 @@
+# Never publish machine-specific downloads, state or logs.
+*.log
+*.reg
+WindowsFeatures-backup.json
+original-values.json
+report.json
+device-inventory.json
+startup-review.json
+startup-review.md
+*-protected-before.json
+*-protected-after.json
+WindowsCustomCleanup/
+downloads/
