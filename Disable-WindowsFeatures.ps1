@@ -510,10 +510,6 @@ try {
     switch ($Mode) {
         'Disable' {
             if ($management -eq 'Personal') {
-                Try-Operation 'System restore point' {
-                    Checkpoint-Computer -Description 'WindowsCustomCleanup before changes' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
-                    Log 'NOTE' 'Restore point' 'Checkpoint requested; Windows protection and frequency limits apply. Per-item backups still required.'
-                }
                 Invoke-BaseSettings
                 Try-Operation 'Game settings' { Invoke-GameSettings }
                 Invoke-SelectedDrivers

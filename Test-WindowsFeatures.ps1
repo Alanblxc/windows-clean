@@ -39,8 +39,9 @@ $caught=$false
 try { Change-Reg 'Fake:\Key' 'Test' 0 } catch { $caught=$true }
 Assert ($caught -and -not $script:writeCalled) 'Backup failure must prevent mutation'
 $source=$ast.Extent.Text
+Assert ($source -notmatch '(?i)Checkpoint-Computer|Enable-ComputerRestore') 'Custom script must leave restore points to upstream'
 Assert ($source -notmatch '(?i)Invoke-WebRequest|codeload\.github|RunDefaults|Start-Process') 'No upstream downloads/execution or UAC launch'
 Assert ($source -notmatch '(?i)Restart-Computer|Stop-Computer|logoff\.exe|shutdown\.exe') 'No automatic restart/logoff'
 Assert ($source -notmatch '(?i)Set-Service\s+[''"]?(WSearch|GamingServices|GamingServicesNet|GameInput)') 'Protected services are not modified'
 Assert ($source -notmatch '(?i)Stop-Process|taskkill') 'No forced process termination'
-Write-Output 'PASS: Windows PowerShell syntax, 10 decision tests, backup-failure test and 4 static safety checks. No cleanup code executed.'
+Write-Output 'PASS: Windows PowerShell syntax, 10 decision tests, backup-failure test and 5 static safety checks. No cleanup code executed.'
