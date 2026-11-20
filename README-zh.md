@@ -1,5 +1,9 @@
 # Windows 11 一次精简
 
+## 单文件下载（推荐）
+
+直接下载 [WindowsClean.ps1](https://raw.githubusercontent.com/Alanblxc/windows-clean/main/WindowsClean.ps1)，运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\WindowsClean.ps1`。无需 ZIP 或其他下载，默认一键精简并保留打印功能。完整上游源码及 MIT 许可证内嵌在此文件中，运行时自动释放到受保护的本轮备份目录；不是运行时联网下载。WindowsClean.ps1 是约 1.3 MB 的发布文件；Disable-WindowsFeatures.ps1 与 vendor 是供维护的原始源码。维护后运行 Build-SingleFile.ps1 重新生成，并运行 Test-SingleFile.ps1 验证。
+
 ## 一键模式（无需选择）
 
 **现在不带参数运行脚本就是一键模式**，无需附加 `-OneClick`。仅需确认标准 UAC；要恢复手动选择，使用 `-ManualMenu`。显式 agent 阶段和旧模式不受默认一键行为影响。
@@ -8,7 +12,7 @@
 
 [发给豆包的提示词](PROMPT-zh.md)已默认使用此模式。豆包必须具备本机执行权限；UAC 被取消则停止，上游还原点失败等系统问题不能保证自动成功。
 
-完整内置固定版本 Win11Debloat，把自定义精简、自启动/服务/组件选择、临时文件、WinSxS 清理及资源对比放进同一入口。**先扫描并选择，再连续执行**。下载解压整个仓库，包括 `vendor`，不能再只下载主脚本。
+完整内置固定版本 Win11Debloat，把自定义精简、自启动/服务/组件、临时文件、WinSxS 清理及资源对比放进同一入口。默认自动执行；需要手动菜单可加 -ManualMenu。仅维护原始入口 Disable-WindowsFeatures.ps1 时需要完整仓库；普通使用只下载 WindowsClean.ps1。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Disable-WindowsFeatures.ps1

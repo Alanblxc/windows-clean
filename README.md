@@ -1,5 +1,9 @@
 # Windows clean
 
+## Single-file download (recommended)
+
+Download [WindowsClean.ps1](https://raw.githubusercontent.com/Alanblxc/windows-clean/main/WindowsClean.ps1) and run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\WindowsClean.ps1`. No ZIP or companion download required. The approximately 1.3 MB release embeds the complete pinned upstream source and MIT license, automatically extracting them into the secured run directory, without runtime downloads. Default execution is one-click with printing preserved. Developers edit Disable-WindowsFeatures.ps1/vendor, rebuild with Build-SingleFile.ps1, and verify with Test-SingleFile.ps1.
+
 ## One-click execution
 
 **Running without arguments now defaults to one-click cleanup**; `-OneClick` is optional. Confirm UAC when requested. Use `-ManualMenu` for the manual menu. Explicit agent stages and legacy modes do not inherit the one-click default.
@@ -8,7 +12,7 @@ Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Disable-WindowsFe
 
 [中文说明](README-zh.md) · [AI 执行提示词](PROMPT-zh.md)
 
-A Windows 11 cleanup entry that combines custom cleanup with a complete, pinned copy of [Win11Debloat](https://github.com/Raphire/Win11Debloat). Scan, choose options before changes, then execute the selection in one run. Download/extract the **whole repository**, including `vendor`; the entry is no longer a standalone download.
+A Windows 11 cleanup entry that combines custom cleanup with a complete, pinned copy of [Win11Debloat](https://github.com/Raphire/Win11Debloat). WindowsClean.ps1 is the standalone release. The source entry Disable-WindowsFeatures.ps1 still requires the whole repository, including vendor. Default execution automatically selects supported non-printing options; manual selection is available with -ManualMenu.
 
 Run from 64-bit Windows PowerShell 5.1:
 

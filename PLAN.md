@@ -1,5 +1,7 @@
 # Unified cleanup scope
 
+Single-file release: Build-SingleFile.ps1 embeds the complete local vendor archive as base64 into the entry, producing WindowsClean.ps1. The release extracts only its embedded archive into the secured run directory and uses it without additional downloads. Test-SingleFile.ps1 verifies syntax, exact entry freshness and every embedded file hash. Rebuild after entry/vendor changes. Prompt always downloads the raw single-file release, never reuses an old copy.
+
 OneClick: default Unified/Console execution opts into G/U defaults and supported startup/extended candidates without prompts, excluding all printing/fax/XPS items. -ManualMenu restores the manual menu and is forwarded through elevation. Deduplicate tasks across inventories, choose disable not delay, preserve unknown/read-only items and existing exclusions. Forward switch through the single UAC launch. Agent stages and legacy modes do not inherit the default.
 
 1. Preserve the custom backup/restore machinery and legacy modes.

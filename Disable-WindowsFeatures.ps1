@@ -735,6 +735,16 @@ function Invoke-UnifiedCleanup {
     if ($AgentStage -in @('Scan','Apply') -and (Test-Path (Join-Path $RunDirectory 'selection.json'))) { throw 'This run has already started applying. Inspect its logs; do not apply it twice.' }
     if ($management -ne 'Personal') { throw 'Managed/enrolled or unknown management state: no unified changes permitted.' }
     $vendor=Join-Path $PSScriptRoot 'vendor\Win11Debloat'
+    if ($script:embeddedUpstream) {
+        $vendor=Join-Path $RunDirectory 'embedded-source\Win11Debloat'
+        if (-not (Test-Path (Join-Path $vendor 'Win11Debloat.ps1'))) {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $archive=Join-Path $RunDirectory 'embedded-upstream.zip'
+            [IO.File]::WriteAllBytes($archive,[Convert]::FromBase64String($script:embeddedUpstream))
+            [IO.Compression.ZipFile]::ExtractToDirectory($archive,(Join-Path $RunDirectory 'embedded-source'))
+            Remove-Item -LiteralPath $archive -Force
+        }
+    }
     if (-not (Test-Path (Join-Path $vendor 'Win11Debloat.ps1'))) { throw 'Download/extract the complete windows-clean repository, including vendor.' }
     $rows=@()
     $script:review=@()
